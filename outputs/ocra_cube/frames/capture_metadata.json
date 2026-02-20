@@ -1,0 +1,12 @@
+{
+  "object_name": "ocra_cube",
+  "frame_count": 10,
+  "rev_time_sec": 1.2,
+  "dir_cw": 1,
+  "delay_after_rotation_sec": 0.5,
+  "rotation_deg_per_frame": 36.0,
+  "left_cam": 1,
+  "right_cam": 0,
+  "width": 2560,
+  "height": 1440
+}

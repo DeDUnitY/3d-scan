@@ -1,0 +1,16 @@
+{
+  "left": {
+    "exposure": -5.0,
+    "gain": 0,
+    "brightness": 0,
+    "contrast": 46,
+    "gamma": 69
+  },
+  "right": {
+    "exposure": -5.0,
+    "gain": 0,
+    "brightness": 0,
+    "contrast": 46,
+    "gamma": 69
+  }
+}
