@@ -14,7 +14,6 @@ __pycache__/
 *.pyc
 
 # optional images
-*.png
 *.html
 *.npz
 *.npy
