@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 # Папка конфигов: калибровка стереопары, параметры камер (exp/bri/con/gam), и т.д.
-CONFIGS_DIR = ROOT_DIR / "configs"
+CONFIGS_DIR = ROOT_DIR / "Configs"
 
 # Имя объекта: меняйте на cube, sphere и т.д. — все скрипты используют эту папку
 OBJECT_NAME = "tri"
