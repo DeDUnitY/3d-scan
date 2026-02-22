@@ -103,21 +103,17 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
 
       <div class="row">
-        <label>BASELINE_CM — смещение левой камеры от центра рига</label>
-        <div class="inline"><input id="baseline_cm_num" type="number" step="0.1" min="0" /></div>
-      </div>
-      <div class="row">
-        <label>ORBIT_RADIUS (cm)</label>
+        <label>ORBIT_RADIUS (cm) — радиус орбиты камеры в плоскости XY</label>
         <input id="orbit_radius" type="range" min="5" max="80" step="0.1" />
         <div class="inline"><input id="orbit_radius_num" type="number" step="0.1" /></div>
       </div>
       <div class="row">
-        <label>CAMERA_HEIGHT (cm)</label>
+        <label>CAMERA_HEIGHT (cm) — высота камеры над столом (ось Z)</label>
         <input id="camera_height" type="range" min="-20" max="40" step="0.1" />
         <div class="inline"><input id="camera_height_num" type="number" step="0.1" /></div>
       </div>
       <div class="row">
-        <label>CAMERA_TILT (deg)</label>
+        <label>CAMERA_TILT (deg) — наклон камеры вверх/вниз (pitch)</label>
         <input id="camera_tilt_deg" type="range" min="-35" max="35" step="0.1" />
         <div class="inline"><input id="camera_tilt_deg_num" type="number" step="0.1" /></div>
       </div>
@@ -189,7 +185,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     const DATA = __DATA_JSON__;
     const plotEl = document.getElementById("plot");
     const statsEl = document.getElementById("stats");
-    const RENDER_MAX = 0;
+    const RENDER_MAX = 500000;  // Cap points to avoid Plotly "Invalid typed array length" on large clouds
     let userCamera = {eye: {x: 1.5, y: 1.5, z: 1.0}};
     let relayoutBound = false;
 
@@ -203,7 +199,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       table_center_x: DATA.defaults.table_center_x ?? 0.0,
       table_center_y: DATA.defaults.table_center_y ?? 0.0,
       table_center_z: DATA.defaults.table_center_z ?? 0.0,
-      baseline_cm: DATA.defaults.baseline_cm ?? 0.0,
       orbit_radius: DATA.defaults.orbit_radius,
       camera_height: DATA.defaults.camera_height,
       camera_tilt_deg: DATA.defaults.camera_tilt_deg,
@@ -252,8 +247,6 @@ HTML_TEMPLATE = r"""<!doctype html>
       bindRangeWithNumber("camera_start_angle_deg", onChange);
       bindRangeWithNumber("table_rotation_step", onChange);
       bindRangeWithNumber("extra_frame_rot_z_deg", onChange);
-      bindNumberOnly("baseline_cm_num", "baseline_cm", onChange);
-      document.getElementById("baseline_cm_num").value = String(params.baseline_cm);
       bindRangeWithNumber("orbit_radius", onChange);
       bindRangeWithNumber("camera_height", onChange);
       bindRangeWithNumber("camera_tilt_deg", onChange);
@@ -351,8 +344,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       return startRad + params.platform_rotation_sign * stepRad * frameIdx + extraRad * frameIdx;
     }
 
-    // Поза левой камеры для заданного угла орбиты (радианы). Камера на окружности смотрит в центр.
-    function buildLeftCameraPose(baselineCm, angleRad) {
+    // Поза камеры для заданного угла орбиты (радианы). Камера на окружности смотрит в центр.
+    function buildCameraPose(angleRad) {
       if (angleRad === undefined) angleRad = 0.0;
       const R = params.orbit_radius;
       const cBlock = [
@@ -378,12 +371,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         const rx = [[1, 0, 0], [0, c, -s], [0, s, c]];
         rBase = matMul3(rBase, rx);
       }
-      const cLeft = [
-        cBlock[0] - rBase[0][0] * (baselineCm * 0.5),
-        cBlock[1] - rBase[1][0] * (baselineCm * 0.5),
-        cBlock[2] - rBase[2][0] * (baselineCm * 0.5)
-      ];
-      return {R: rBase, C: cLeft};
+      return {R: rBase, C: cBlock};
     }
 
     function camToWorld(pt, pose) {
@@ -408,16 +396,15 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function buildCloud() {
       const pivot = [params.table_center_x, params.table_center_y, params.table_center_z];
-      const baseline = params.baseline_cm;
       const xs = [], ys = [], zs = [];
       const colors = [];
       const hasColors = DATA.has_colors || false;
       let totalRaw = 0;
       // Turntable: одна поза камеры (кадр 0), вращение вокруг pivot
-      const pose0 = buildLeftCameraPose(baseline, params.camera_start_angle_deg * Math.PI / 180.0);
+      const pose0 = buildCameraPose(params.camera_start_angle_deg * Math.PI / 180.0);
       for (const frame of DATA.frames) {
         if (params.frame_enabled[frame.idx] === false) continue;
-        const pose = params.use_turntable ? pose0 : buildLeftCameraPose(baseline, frameAngleRad(frame.idx));
+        const pose = params.use_turntable ? pose0 : buildCameraPose(frameAngleRad(frame.idx));
         const angleUndoRad = params.use_turntable
           ? -(params.platform_rotation_sign * params.table_rotation_step * Math.PI / 180.0 * frame.idx)
           : 0;
@@ -544,7 +531,6 @@ HTML_TEMPLATE = r"""<!doctype html>
     function saveJson() {
       const out = {
         FRAME_ENABLED: params.frame_enabled,
-        BASELINE_CM: params.baseline_cm,
         USE_TURNTABLE: params.use_turntable,
         TABLE_CENTER_X: params.table_center_x,
         TABLE_CENTER_Y: params.table_center_y,
@@ -622,7 +608,6 @@ def load_bundle(path: Path) -> dict:
         frames.append(frame_data)
 
     defaults = {
-        "baseline_cm": float(data["baseline_cm"]) if "baseline_cm" in data.files else 0.0,
         "rotation_step_deg": float(data["rotation_step_deg"]),
         "camera_start_angle_deg": float(data["camera_start_angle_deg"]) if "camera_start_angle_deg" in data.files else 0.0,
         "extra_frame_rot_z_deg": float(data["extra_frame_rot_z_deg"]) if "extra_frame_rot_z_deg" in data.files else 0.0,
@@ -650,7 +635,6 @@ def main() -> None:
             with pose_file.open("r", encoding="utf-8") as f:
                 pose = json.load(f)
             for key, js_key in [
-                ("baseline_cm", "BASELINE_CM"),
                 ("frame_enabled", "FRAME_ENABLED"),
                 ("use_turntable", "USE_TURNTABLE"),
                 ("table_center_x", "TABLE_CENTER_X"),

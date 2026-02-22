@@ -1,11 +1,22 @@
 {
-  "BASELINE_CM": 3.5,
+  "FRAME_ENABLED": {
+    "0": true,
+    "1": true,
+    "2": true,
+    "3": true,
+    "4": true,
+    "5": true,
+    "6": true,
+    "7": true,
+    "8": true,
+    "9": true
+  },
   "USE_TURNTABLE": true,
-  "TABLE_CENTER_X": -3.3,
-  "TABLE_CENTER_Y": 2.6,
+  "TABLE_CENTER_X": -7.3,
+  "TABLE_CENTER_Y": 3.9,
   "TABLE_CENTER_Z": 0,
   "CAMERA_START_ANGLE_DEG": 0,
-  "TABLE_ROTATION_STEP": 120,
+  "TABLE_ROTATION_STEP": 36,
   "EXTRA_FRAME_ROT_Z_DEG": 0,
   "PLATFORM_ROTATION_SIGN": 1,
   "ORBIT_RADIUS": 32,
@@ -16,14 +27,14 @@
   "CAMERA_MAX_DISTANCE": 40,
   "USE_GEOMETRIC_CROP": true,
   "CROP_RADIUS": 30,
-  "Z_MIN": -200,
+  "Z_MIN": -2,
   "Z_MAX": 15,
   "INVERT_X_FINAL": true,
-  "USE_COLOR_FILTER": false,
+  "USE_COLOR_FILTER": true,
   "TARGET_COLOR_RGB": [
     255,
     50,
     50
   ],
-  "COLOR_TOLERANCE": 150
+  "COLOR_TOLERANCE": 100
 }

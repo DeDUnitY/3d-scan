@@ -12,8 +12,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 IMAGES_DIR = ROOT_DIR / "calibration" / "images_stereo"
 
 # Индексы камер (левая = 0, правая = 1; поменяйте, если у вас наоборот)
-CAM_LEFT_INDEX = 0
-CAM_RIGHT_INDEX = 1
+CAM_LEFT_INDEX = 1
+CAM_RIGHT_INDEX = 0
 
 # Параметры ChArUco доски (совпадают с calibrate_camera_aruco.py):
 # 11 колонок, 8 рядов (по рядам чередование 6/5 маркеров)

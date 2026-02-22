@@ -42,13 +42,12 @@ SGBM_PARAMS_FILE = get_sgbm_params_file()
 
 class Config:
     INPUT_DIR = str(get_frames_dir())
-    BASELINE_CM = 0.0  # из калибровки; смещение левой камеры от центра рига
 
     # Degrees per frame (e.g. 360/10=36). Must match actual turntable.
     TABLE_ROTATION_STEP = 36.0
     CAMERA_START_ANGLE_DEG = 0.0
-    ORBIT_RADIUS_XY = 32.0
-    CAMERA_HEIGHT_Z = 3.5
+    ORBIT_RADIUS_XY = 32.0  # см, радиус орбиты камеры в плоскости XY
+    CAMERA_HEIGHT_Z = 3.5   # см, высота камеры над столом (ось Z)
     CAMERA_OFFSET_Y = 0.0
     CAMERA_TILT_DEG = 0.0
 
@@ -66,7 +65,7 @@ class Config:
     DISPARITY_SCALE = 1.0  # 1.0 = полное разрешение (точность важнее скорости)
 
     # WLS постфильтр: left-right consistency, улучшает плоскостность
-    USE_WLS_FILTER = True
+    USE_WLS_FILTER = False
     WLS_LAMBDA = 8000.0
     WLS_SIGMA = 1.5
 
@@ -74,25 +73,28 @@ class Config:
     # (красный тетраэдр) для лучшего stereo matching
     USE_CLAHE = False
 
-    ROI_MARGIN = 800
-    ROI_MARGIN_TOP = 400
-    ROI_MARGIN_BOTTOM = 500
+    ROI_MARGIN =  800
+    ROI_MARGIN_TOP =  400
+    ROI_MARGIN_BOTTOM =  500
 
-    CAMERA_MIN_DISTANCE = 0.0
-    CAMERA_MAX_DISTANCE = 40.0
+    # Swap left/right images for stereo matching (use if Z comes out negative; fix physical wiring instead)
+    SWAP_LEFT_RIGHT = False
 
-    CROP_RADIUS = 20.0
-    Z_MIN = -2.0
-    Z_MAX = 15.0
+    CAMERA_MIN_DISTANCE = 10.0
+    CAMERA_MAX_DISTANCE = 50.0
 
-    USE_NOISE_FILTER = False
+    CROP_RADIUS = 60.0
+    Z_MIN = -10.0
+    Z_MAX = 20.0
+
+    USE_NOISE_FILTER = True
     SOR_K = 20
     SOR_STD_MULTIPLIER = 2.0
 
     # Фильтр по цвету: оставлять только точки определенного цвета
     USE_COLOR_FILTER = False  # Включить/выключить фильтр цвета
-    TARGET_COLOR_RGB = [255, 50, 50]  # Целевой цвет в RGB (красный по умолчанию)
-    COLOR_TOLERANCE = 150  # Допустимое отклонение по каждому каналу RGB (0-255)
+    TARGET_COLOR_RGB = [200, 100, 50]  # Целевой цвет в RGB (красный по умолчанию)
+    COLOR_TOLERANCE = 100  # Допустимое отклонение по каждому каналу RGB (0-255)
 
     SAVE_POINTS = True
     POINTS_FILE = str(OUTPUT_DIR / "stereo_points.npy")
@@ -102,7 +104,9 @@ class Config:
     ALIGNMENT_BUNDLE_MAX_POINTS_PER_FRAME = 0  # 0 = без лимита (все точки в bundle)
     PLOTLY_MODE = "html"
     PLOTLY_FILE = str(OUTPUT_DIR / "points_cloud.html")
-    PICK_MAX_POINTS = 0  # 0 = без лимита (все точки в HTML)
+    # Limit points in HTML to avoid "Array buffer allocation failed" in browser WebGL.
+    # Plotly embeds data into the file; too many points exceed JS memory limits (~2GB).
+    PICK_MAX_POINTS = 500_000  # 0 = no limit (risks browser crash on large clouds)
 
 
 def load_sgbm_params(path: Path) -> dict | None:
@@ -259,7 +263,20 @@ def compute_points_3d(img_l, img_r, calib, maps):
         disp[mask0] = 0.0
 
     pts = cv2.reprojectImageTo3D(disp, calib["Q"])
-    bad = (pts[:, :, 2] <= 0) | (pts[:, :, 2] > 100.0)
+    z_ch = pts[:, :, 2]
+    valid_d = disp > 0
+    if valid_d.any():
+        z_where_disp = z_ch[valid_d]
+        _n_neg = int(np.sum(z_where_disp <= 0))
+        _n_inf = int(np.sum(~np.isfinite(z_where_disp)))
+        _n_gt100 = int(np.sum(z_where_disp > 100))
+        _n_ok = int(np.sum((z_where_disp > 0) & (z_where_disp <= 100) & np.isfinite(z_where_disp)))
+        if _n_ok == 0 and not hasattr(compute_points_3d, "_diag_printed"):
+            d_pos = disp[valid_d]
+            print(f"  [diag] disp (px): min={float(np.min(d_pos)):.3f} max={float(np.max(d_pos)):.3f} mean={float(np.mean(d_pos)):.3f}")
+            print(f"  [diag] Z (m) where disp>0: neg={_n_neg} inf={_n_inf} >100={_n_gt100} ok(0,100]={_n_ok}")
+            compute_points_3d._diag_printed = True
+    bad = (z_ch <= 0) | (z_ch > 100.0)
     pts[bad] = [np.nan, np.nan, np.nan]
 
     # #region agent log — depth diagnostic (hyp A: spatial bias, B: Q/calib)
@@ -339,12 +356,6 @@ def camera_pose_for_frame(frame_id):
             dtype=np.float64,
         )
         r_cw = r_cw @ rx
-
-    # Смещение к позиции левой камеры (левее центра рига на baseline/2 по оси X камеры)
-    baseline_cm = getattr(Config, "BASELINE_CM", 0.0)
-    if baseline_cm > 1e-6:
-        x_axis_world = r_cw[:, 0]
-        c_block = c_block - (baseline_cm * 0.5) * x_axis_world
 
     # #region agent log
     if frame_id <= 1:
@@ -439,7 +450,6 @@ def save_bundle(all_clouds_cam):
     payload = {
         "frame_indices": np.asarray(frames, dtype=np.int32),
         "clouds_cam": np.array(clouds, dtype=object),
-        "baseline_cm": np.float32(getattr(Config, "BASELINE_CM", 0.0)),
         "rotation_step_deg": np.float32(Config.TABLE_ROTATION_STEP),
         "camera_start_angle_deg": np.float32(Config.CAMERA_START_ANGLE_DEG),
         "extra_frame_rot_z_deg": np.float32(0.0),
@@ -507,7 +517,7 @@ def main():
                 "CAMERA_OFFSET_Y": "CAMERA_OFFSET_Y",
                 "CAMERA_MIN_DISTANCE": "CAMERA_MIN_DISTANCE",
                 "CAMERA_MAX_DISTANCE": "CAMERA_MAX_DISTANCE",
-                "BASELINE_CM": "BASELINE_CM",
+                "SWAP_LEFT_RIGHT": "SWAP_LEFT_RIGHT",
             }
             for json_key, config_attr in mapping.items():
                 if json_key in pose_params and hasattr(Config, config_attr):
@@ -516,14 +526,12 @@ def main():
         except Exception as e:
             print(f"Warning: Could not load pose params from {pose_params_file}: {e}")
 
+    print(f"Calibration: {CALIBRATION_FILE}")
     calib = load_stereo_calib(CALIBRATION_FILE)
     # #region agent log — calibration (hyp B: Q error)
     Q = calib["Q"]
     _dbg_log("main.py:main", "calib_Q", {"hypothesisId": "B", "Q_row3": Q[3, :].tolist(), "baseline_cm": calib.get("baseline_cm"), "image_size": list(calib["image_size"])})
     # #endregion
-    Config.BASELINE_CM = float(pose_params.get("BASELINE_CM", calib.get("baseline_cm", 0.0)))
-    if Config.BASELINE_CM > 0:
-        print(f"  baseline (left cam offset): {Config.BASELINE_CM:.2f} cm")
     maps = build_rectify_maps(calib)
     pairs = collect_pairs(Config.INPUT_DIR)
     if not pairs:
@@ -535,14 +543,21 @@ def main():
     print(f"  TABLE_ROTATION_STEP={step}° (full turn 360° = {360/step:.1f} frames; for {n} frames use {360/n:.1f}° per frame)")
 
     all_clouds_cam = []
+    load_failures = 0
+    empty_cloud_frames = []
     for i, (pl, pr, fid) in enumerate(pairs):
         left, right = cv2.imread(pl), cv2.imread(pr)
         if left is None or right is None:
+            load_failures += 1
+            if load_failures <= 3:
+                print(f"  [skip] Frame {fid}: failed to load {pl} or {pr}")
             continue
         # #region agent log — image size vs calib (hyp C: resolution mismatch)
         if i == 0:
             _dbg_log("main.py:main", "img_size", {"hypothesisId": "C", "left_shape": list(left.shape), "calib_size": list(calib["image_size"]), "match": left.shape[:2][::-1] == tuple(calib["image_size"])})
         # #endregion
+        if getattr(Config, "SWAP_LEFT_RIGHT", False):
+            left, right = right, left
         points_3d, disp, left_color_rect = compute_points_3d(left, right, calib, maps)
         h, w = points_3d.shape[:2]
         top = Config.ROI_MARGIN_TOP if Config.ROI_MARGIN_TOP is not None else Config.ROI_MARGIN
@@ -559,6 +574,31 @@ def main():
 
         cloud_cam = points_map_to_cloud_cm(points_3d, colors_bgr=left_color_rect)
         if len(cloud_cam) == 0:
+            disp_valid = int(np.sum(disp > 0))
+            pts_valid = np.isfinite(points_3d).all(axis=2) & (points_3d[:, :, 2] > 1e-6)
+            n_pts = int(np.sum(pts_valid))
+            empty_cloud_frames.append((fid, disp_valid, n_pts, disp.size))
+            if len(empty_cloud_frames) <= 2:
+                print(f"  [skip] Frame {fid}: 0 points (disparity: {disp_valid}/{disp.size} nonzero, valid Z: {n_pts})")
+            continue
+        if Config.USE_COLOR_FILTER and cloud_cam.shape[1] >= 6:
+            cloud_cam = filter_by_color(cloud_cam, Config.TARGET_COLOR_RGB, Config.COLOR_TOLERANCE)
+            if len(cloud_cam) == 0:
+                empty_cloud_frames.append((fid, 0, 0, disp.size))
+                if len(empty_cloud_frames) <= 2:
+                    print(f"  [skip] Frame {fid}: 0 points after color filter")
+                continue
+        d = np.linalg.norm(cloud_cam[:, :3], axis=1)
+        mask = np.ones(len(cloud_cam), dtype=bool)
+        if Config.CAMERA_MIN_DISTANCE > 0:
+            mask &= d >= Config.CAMERA_MIN_DISTANCE
+        if Config.CAMERA_MAX_DISTANCE > 0:
+            mask &= d <= Config.CAMERA_MAX_DISTANCE
+        cloud_cam = cloud_cam[mask]
+        if len(cloud_cam) == 0:
+            empty_cloud_frames.append((fid, 0, 0, disp.size))
+            if len(empty_cloud_frames) <= 2:
+                print(f"  [skip] Frame {fid}: 0 points after distance filter")
             continue
         all_clouds_cam.append((fid, cloud_cam))
 
@@ -568,7 +608,18 @@ def main():
             cv2.imwrite(str(OUTPUT_DIR / "debug_disparity.png"), vis)
 
     if not all_clouds_cam:
-        raise RuntimeError("No points after ROI.")
+        msg = "No points after ROI."
+        if load_failures == n:
+            msg += f" All {n} frames: images failed to load. Check INPUT_DIR paths."
+        elif empty_cloud_frames:
+            fid0, d_valid, n_pts, d_size = empty_cloud_frames[0]
+            if d_valid == 0:
+                msg += f" Disparity is all zeros (SGBM produced no matches). Check: left/right swap, calibration, BLOCK_SIZE (try 5 or 9)."
+            elif n_pts == 0:
+                msg += f" Disparity has {d_valid} nonzero pixels but reprojection yields no valid Z. Check calibration Q matrix."
+            else:
+                msg += f" First frame: {d_valid}/{d_size} disp nonzero, {n_pts} valid pts before cloud — check points_map_to_cloud_cm."
+        raise RuntimeError(msg)
     save_bundle(all_clouds_cam)
 
     # Физическая модель: камера закреплена, объект вращается (turntable).
@@ -662,6 +713,7 @@ def main():
         pick_idx = np.linspace(0, len(xyz) - 1, Config.PICK_MAX_POINTS, dtype=int)
         xyz_pick = xyz[pick_idx]
         colors_pick = colors[pick_idx] if colors is not None else None
+        print(f"Downsampled {len(xyz)} -> {Config.PICK_MAX_POINTS} points for HTML (browser memory limit)")
     else:
         xyz_pick = xyz
         colors_pick = colors
