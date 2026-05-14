@@ -2,29 +2,34 @@
 Interactive stereo disparity tuner with OpenCV trackbars.
 
 Features:
-- Uses stereo calibration from configs/stereo_calib.npz
+- Uses stereo calibration from outputs/calibration/stereo_calib.npz
 - Lets you switch frame pair index
 - Tune key SGBM parameters with sliders
 - Shows semi-transparent depth overlay over the rectified left image
-- Save tuned parameters to configs/sgbm_tuned_params.json (shared across objects)
+- Save tuned parameters to outputs/reconstruction/sgbm_tuned_params.json
+- On startup loads the newest sgbm_tuned_params.json among reconstruction, outputs/calibration, Configs.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
 
 
-from object_config import get_calibration_file, get_sgbm_params_file
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 INPUT_DIR = ROOT_DIR / "outputs" / "recorded" / "frames"
-CALIBRATION_FILE = get_calibration_file()
-OUTPUT_JSON = get_sgbm_params_file()
+CALIBRATION_FILE = ROOT_DIR / "outputs" / "calibration" / "stereo_calib.npz"
+OUTPUT_JSON = ROOT_DIR / "outputs" / "reconstruction" / "sgbm_tuned_params.json"
+# Все места, где может лежать сохранённый тюнинг; берётся файл с самой поздней датой изменения
+SGBM_JSON_CANDIDATES: List[Path] = [
+    OUTPUT_JSON,
+    ROOT_DIR / "outputs" / "calibration" / "sgbm_tuned_params.json",
+    ROOT_DIR / "Configs" / "sgbm_tuned_params.json",
+]
 
 WIN_OVERLAY = "Stereo Tune - Overlay"
 WIN_DISP = "Stereo Tune - Disparity"
@@ -290,6 +295,93 @@ def save_params_json(path: Path, params: Dict[str, int]) -> None:
         json.dump(params, f, ensure_ascii=False, indent=2)
 
 
+def pick_latest_sgbm_json(candidates: List[Path]) -> Path | None:
+    existing = [p for p in candidates if p.is_file()]
+    if not existing:
+        return None
+    return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+def _clip_int(v: Any, lo: int, hi: int) -> int:
+    try:
+        x = int(v)
+    except (TypeError, ValueError):
+        x = lo
+    return max(lo, min(hi, x))
+
+
+def sgbm_saved_dict_to_raw_sliders(data: Dict[str, Any], num_pairs: int) -> Dict[str, int]:
+    """Преобразует JSON как после [S] (или из main/Configs) в позиции трекбаров."""
+    num_disp = int(data.get("NUM_DISPARITIES", 16 * 40))
+    num_x16 = max(1, num_disp // 16)
+
+    block = _clip_int(data.get("BLOCK_SIZE", 9), 3, 21)
+
+    alpha_raw = 55
+    if "ALPHA" in data:
+        a = data["ALPHA"]
+        try:
+            af = float(a)
+            alpha_raw = int(round(af * 100.0)) if af <= 1.0 else int(round(af))
+        except (TypeError, ValueError):
+            pass
+    alpha_raw = _clip_int(alpha_raw, 0, 100)
+
+    pair_idx = _clip_int(data.get("PAIR_IDX", 0), 0, max(0, num_pairs - 1))
+
+    return {
+        "pair_idx": pair_idx,
+        "min_disp": _clip_int(data.get("MIN_DISPARITY", 0), 0, 64),
+        "num_disp_x16": _clip_int(num_x16, 1, 128),
+        "block_size": block,
+        "uniqueness": _clip_int(data.get("UNIQUENESS_RATIO", 12), 0, 50),
+        "speckle_window": _clip_int(data.get("SPECKLE_WINDOW_SIZE", 120), 0, 300),
+        "speckle_range": _clip_int(data.get("SPECKLE_RANGE", 8), 0, 64),
+        "disp12_diff": _clip_int(data.get("DISP12_MAX_DIFF", 2), 0, 25),
+        "pre_filter_cap": _clip_int(data.get("PRE_FILTER_CAP", 63), 1, 63),
+        "median_k": _clip_int(data.get("DISPARITY_MEDIAN_SIZE", 3), 0, 9),
+        "alpha": alpha_raw,
+        "color_map": _clip_int(data.get("COLOR_MAP", 1), 0, 5),
+        "preview_pct": _clip_int(data.get("PREVIEW_PCT", 55), 20, 100),
+        "use_3way": _clip_int(data.get("USE_3WAY", 0), 0, 1),
+        "backend": _clip_int(data.get("BACKEND", 0), 0, 1),
+    }
+
+
+def apply_raw_sliders_to_trackbars(raw: Dict[str, int], num_pairs: int) -> None:
+    pi = min(max(0, raw["pair_idx"]), max(0, num_pairs - 1))
+    cv2.setTrackbarPos(TB["pair_idx"], WIN_CTRL, pi)
+    cv2.setTrackbarPos(TB["min_disp"], WIN_CTRL, raw["min_disp"])
+    cv2.setTrackbarPos(TB["num_disp_x16"], WIN_CTRL, raw["num_disp_x16"])
+    cv2.setTrackbarPos(TB["block_size"], WIN_CTRL, raw["block_size"])
+    cv2.setTrackbarPos(TB["uniqueness"], WIN_CTRL, raw["uniqueness"])
+    cv2.setTrackbarPos(TB["speckle_window"], WIN_CTRL, raw["speckle_window"])
+    cv2.setTrackbarPos(TB["speckle_range"], WIN_CTRL, raw["speckle_range"])
+    cv2.setTrackbarPos(TB["disp12_diff"], WIN_CTRL, raw["disp12_diff"])
+    cv2.setTrackbarPos(TB["pre_filter_cap"], WIN_CTRL, raw["pre_filter_cap"])
+    cv2.setTrackbarPos(TB["median_k"], WIN_CTRL, raw["median_k"])
+    cv2.setTrackbarPos(TB["alpha"], WIN_CTRL, raw["alpha"])
+    cv2.setTrackbarPos(TB["color_map"], WIN_CTRL, raw["color_map"])
+    cv2.setTrackbarPos(TB["preview_pct"], WIN_CTRL, raw["preview_pct"])
+    cv2.setTrackbarPos(TB["use_3way"], WIN_CTRL, raw["use_3way"])
+    cv2.setTrackbarPos(TB["backend"], WIN_CTRL, raw["backend"])
+
+
+def try_load_latest_saved_sliders(num_pairs: int) -> Tuple[Dict[str, int] | None, Path | None]:
+    path = pick_latest_sgbm_json(SGBM_JSON_CANDIDATES)
+    if path is None:
+        return None, None
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    raw = sgbm_saved_dict_to_raw_sliders(data, num_pairs)
+    return raw, path
+
+
 def print_snippet(params: Dict[str, int]) -> None:
     print("\nUse these values in Config (main.py):")
     for key in [
@@ -367,6 +459,11 @@ def main() -> None:
     maps = build_rectify_maps(calib)
     size = calib["image_size"]
     create_trackbars(len(pairs))
+    loaded_path: Path | None = None
+    saved_raw, saved_file = try_load_latest_saved_sliders(len(pairs))
+    if saved_raw is not None and saved_file is not None:
+        apply_raw_sliders_to_trackbars(saved_raw, len(pairs))
+        loaded_path = saved_file
     cv2.namedWindow(WIN_OVERLAY, cv2.WINDOW_NORMAL)
     cv2.namedWindow(WIN_DISP, cv2.WINDOW_NORMAL)
 
@@ -378,6 +475,10 @@ def main() -> None:
     last_disp_show: np.ndarray | None = None
     cuda_ok, cuda_info = detect_cuda_support()
 
+    if loaded_path is not None:
+        print(f"Загружены последние сохранённые параметры: {loaded_path}")
+    else:
+        print("Файл sgbm_tuned_params.json не найден или битый — ползунки по умолчанию.")
     print("Управление:")
     print("  - двигай ползунки в окне 'Stereo Tune - Controls'")
     print("  - [S] сохранить параметры в JSON")

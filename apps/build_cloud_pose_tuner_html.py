@@ -17,9 +17,10 @@ import numpy as np
 
 from object_config import get_reconstruction_dir, get_pose_params_file
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = get_reconstruction_dir()
-BUNDLE_FILE = OUTPUT_DIR / "stereo_alignment_bundle.npz"
-HTML_FILE = OUTPUT_DIR / "cloud_pose_tuner.html"
+BUNDLE_NAME = "stereo_alignment_bundle.npz"
+HTML_NAME = "cloud_pose_tuner.html"
 MAX_POINTS_PER_FRAME = 0  # 0 = без лимита (все точки по кадрам)
 
 
@@ -59,18 +60,18 @@ HTML_TEMPLATE = r"""<!doctype html>
 
       <div class="row">
         <label>CAMERA_START_ANGLE_DEG (deg)</label>
-        <input id="camera_start_angle_deg" type="range" min="-180" max="180" step="0.5" />
-        <div class="inline"><input id="camera_start_angle_deg_num" type="number" step="0.1" /></div>
+        <input id="camera_start_angle_deg" type="range" min="-180" max="180" step="0.01" />
+        <div class="inline"><input id="camera_start_angle_deg_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>TABLE_ROTATION_STEP (deg/frame)</label>
-        <input id="table_rotation_step" type="range" min="0.1" max="72" step="0.1" />
-        <div class="inline"><input id="table_rotation_step_num" type="number" step="0.1" /></div>
+        <input id="table_rotation_step" type="range" min="0.1" max="72" step="0.01" />
+        <div class="inline"><input id="table_rotation_step_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>EXTRA_FRAME_ROT_Z_DEG (deg/frame)</label>
-        <input id="extra_frame_rot_z_deg" type="range" min="-20" max="20" step="0.1" />
-        <div class="inline"><input id="extra_frame_rot_z_deg_num" type="number" step="0.1" /></div>
+        <input id="extra_frame_rot_z_deg" type="range" min="-20" max="20" step="0.01" />
+        <div class="inline"><input id="extra_frame_rot_z_deg_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>PLATFORM_ROTATION_SIGN</label>
@@ -91,58 +92,58 @@ HTML_TEMPLATE = r"""<!doctype html>
       <h4 style="margin: 14px 0 8px 0; color: #aaa;">Центр вращения стола (cm)</h4>
       <div class="row">
         <label>TABLE_CENTER_X</label>
-        <div class="inline"><input id="table_center_x_num" type="number" step="0.1" /></div>
+        <div class="inline"><input id="table_center_x_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>TABLE_CENTER_Y</label>
-        <div class="inline"><input id="table_center_y_num" type="number" step="0.1" /></div>
+        <div class="inline"><input id="table_center_y_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>TABLE_CENTER_Z</label>
-        <div class="inline"><input id="table_center_z_num" type="number" step="0.1" /></div>
+        <div class="inline"><input id="table_center_z_num" type="number" step="0.01" /></div>
       </div>
 
       <div class="row">
         <label>ORBIT_RADIUS (cm) — радиус орбиты камеры в плоскости XY</label>
-        <input id="orbit_radius" type="range" min="5" max="80" step="0.1" />
-        <div class="inline"><input id="orbit_radius_num" type="number" step="0.1" /></div>
+        <input id="orbit_radius" type="range" min="5" max="80" step="0.01" />
+        <div class="inline"><input id="orbit_radius_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>CAMERA_HEIGHT (cm) — высота камеры над столом (ось Z)</label>
-        <input id="camera_height" type="range" min="-20" max="40" step="0.1" />
-        <div class="inline"><input id="camera_height_num" type="number" step="0.1" /></div>
+        <input id="camera_height" type="range" min="-20" max="40" step="0.01" />
+        <div class="inline"><input id="camera_height_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>CAMERA_TILT (deg) — наклон камеры вверх/вниз (pitch)</label>
-        <input id="camera_tilt_deg" type="range" min="-35" max="35" step="0.1" />
-        <div class="inline"><input id="camera_tilt_deg_num" type="number" step="0.1" /></div>
+        <input id="camera_tilt_deg" type="range" min="-35" max="35" step="0.01" />
+        <div class="inline"><input id="camera_tilt_deg_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>CAMERA_OFFSET_Y (cm)</label>
-        <input id="camera_offset_y" type="range" min="-20" max="20" step="0.1" />
-        <div class="inline"><input id="camera_offset_y_num" type="number" step="0.1" /></div>
+        <input id="camera_offset_y" type="range" min="-20" max="20" step="0.01" />
+        <div class="inline"><input id="camera_offset_y_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>CAMERA_MIN_DISTANCE (cm, 0=off)</label>
-        <input id="camera_min_distance" type="range" min="0" max="200" step="0.5" />
-        <div class="inline"><input id="camera_min_distance_num" type="number" step="0.5" /></div>
+        <input id="camera_min_distance" type="range" min="0" max="200" step="0.01" />
+        <div class="inline"><input id="camera_min_distance_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>CAMERA_MAX_DISTANCE (cm, 0=off)</label>
-        <input id="camera_max_distance" type="range" min="0" max="200" step="0.5" />
-        <div class="inline"><input id="camera_max_distance_num" type="number" step="0.5" /></div>
+        <input id="camera_max_distance" type="range" min="0" max="200" step="0.01" />
+        <div class="inline"><input id="camera_max_distance_num" type="number" step="0.01" /></div>
       </div>
 
       <div class="row">
         <label>CROP_RADIUS (cm)</label>
-        <input id="crop_radius" type="range" min="1" max="120" step="0.1" />
-        <div class="inline"><input id="crop_radius_num" type="number" step="0.1" /></div>
+        <input id="crop_radius" type="range" min="1" max="120" step="0.01" />
+        <div class="inline"><input id="crop_radius_num" type="number" step="0.01" /></div>
       </div>
       <div class="row">
         <label>Z_MIN / Z_MAX (cm)</label>
         <div class="inline">
-          <input id="z_min_num" type="number" step="0.1" />
-          <input id="z_max_num" type="number" step="0.1" />
+          <input id="z_min_num" type="number" step="0.01" />
+          <input id="z_max_num" type="number" step="0.01" />
         </div>
       </div>
 
@@ -156,6 +157,13 @@ HTML_TEMPLATE = r"""<!doctype html>
         <label><input id="use_color_filter" type="checkbox" /> Включить фильтр по цвету</label>
       </div>
       <div class="row">
+        <label>Режим:</label>
+        <div>
+          <label><input id="color_filter_mode_target" type="radio" name="color_filter_mode" value="target" /> Оставить только цвет (R,G,B ± допуск)</label><br/>
+          <label><input id="color_filter_mode_dark" type="radio" name="color_filter_mode" value="exclude_dark" /> Исключить только тёмные (порог яркости)</label>
+        </div>
+      </div>
+      <div id="color_filter_target_row" class="row">
         <label>Целевой цвет RGB (0–255)</label>
         <div class="inline">
           <input id="target_r_num" type="number" min="0" max="255" title="R" />
@@ -163,19 +171,25 @@ HTML_TEMPLATE = r"""<!doctype html>
           <input id="target_b_num" type="number" min="0" max="255" title="B" />
         </div>
       </div>
-      <div class="row">
+      <div id="color_filter_tolerance_row" class="row">
         <label>Допуск по каналу (0–255)</label>
         <div class="inline"><input id="color_tolerance_num" type="number" min="0" max="255" /></div>
+      </div>
+      <div id="color_filter_dark_row" class="row" style="display:none;">
+        <label>Порог «тёмного» (0–255): отсечь точки, где R,G,B всё &lt;= порога</label>
+        <div class="inline"><input id="dark_threshold_num" type="number" min="0" max="255" /></div>
       </div>
 
       <div class="btns">
         <button id="btn_save">Download JSON</button>
+        <button id="btn_save_common">Save Common Params</button>
         <button id="btn_reset">Reset view</button>
       </div>
       <div id="stats" class="stat"></div>
       <div class="muted">
         Built from stereo_alignment_bundle.npz (no disparity recompute).<br/>
-        Сохраните JSON в <b>configs/pose_tuned_params.json</b> (параметры рига, общие для объектов).
+        <b>Save Common Params</b> сохраняет параметры в браузере и они автоматически применяются в следующих HTML.<br/>
+        Download JSON: сохраните файл в <b>Configs/pose_tuned_params.json</b> для использования в Python-скриптах.
       </div>
     </div>
     <div id="plot" class="plot"></div>
@@ -183,6 +197,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 
   <script>
     const DATA = __DATA_JSON__;
+    const COMMON_PARAMS_STORAGE_KEY = "stereo_pose_common_params_v1";
     const plotEl = document.getElementById("plot");
     const statsEl = document.getElementById("stats");
     const RENDER_MAX = 500000;  // Cap points to avoid Plotly "Invalid typed array length" on large clouds
@@ -211,11 +226,80 @@ HTML_TEMPLATE = r"""<!doctype html>
       invert_x: true,
       use_crop: true,
       use_color_filter: false,
+      color_filter_mode: "exclude_dark",
       target_r: 255,
       target_g: 50,
       target_b: 50,
       color_tolerance: 150,
+      dark_threshold: 40,
     };
+
+    function buildPosePayload() {
+      return {
+        FRAME_ENABLED: params.frame_enabled,
+        USE_TURNTABLE: params.use_turntable,
+        TABLE_CENTER_X: params.table_center_x,
+        TABLE_CENTER_Y: params.table_center_y,
+        TABLE_CENTER_Z: params.table_center_z,
+        CAMERA_START_ANGLE_DEG: params.camera_start_angle_deg,
+        TABLE_ROTATION_STEP: params.table_rotation_step,
+        EXTRA_FRAME_ROT_Z_DEG: params.extra_frame_rot_z_deg,
+        PLATFORM_ROTATION_SIGN: params.platform_rotation_sign,
+        ORBIT_RADIUS: params.orbit_radius,
+        CAMERA_HEIGHT: params.camera_height,
+        CAMERA_TILT: params.camera_tilt_deg,
+        CAMERA_OFFSET_Y: params.camera_offset_y,
+        CAMERA_MIN_DISTANCE: params.camera_min_distance,
+        CAMERA_MAX_DISTANCE: params.camera_max_distance,
+        USE_GEOMETRIC_CROP: params.use_crop,
+        CROP_RADIUS: params.crop_radius,
+        Z_MIN: params.z_min,
+        Z_MAX: params.z_max,
+        INVERT_X_FINAL: params.invert_x,
+        USE_COLOR_FILTER: params.use_color_filter,
+        COLOR_FILTER_MODE: params.color_filter_mode || "target",
+        TARGET_COLOR_RGB: [params.target_r, params.target_g, params.target_b],
+        COLOR_TOLERANCE: params.color_tolerance,
+        DARK_THRESHOLD: params.dark_threshold ?? 40
+      };
+    }
+
+    function applyCommonParamsFromStorage() {
+      try {
+        const raw = localStorage.getItem(COMMON_PARAMS_STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!saved || typeof saved !== "object") return;
+        if (saved.USE_TURNTABLE !== undefined) params.use_turntable = !!saved.USE_TURNTABLE;
+        if (saved.TABLE_CENTER_X !== undefined) params.table_center_x = Number(saved.TABLE_CENTER_X);
+        if (saved.TABLE_CENTER_Y !== undefined) params.table_center_y = Number(saved.TABLE_CENTER_Y);
+        if (saved.TABLE_CENTER_Z !== undefined) params.table_center_z = Number(saved.TABLE_CENTER_Z);
+        if (saved.CAMERA_START_ANGLE_DEG !== undefined) params.camera_start_angle_deg = Number(saved.CAMERA_START_ANGLE_DEG);
+        if (saved.TABLE_ROTATION_STEP !== undefined) params.table_rotation_step = Number(saved.TABLE_ROTATION_STEP);
+        if (saved.EXTRA_FRAME_ROT_Z_DEG !== undefined) params.extra_frame_rot_z_deg = Number(saved.EXTRA_FRAME_ROT_Z_DEG);
+        if (saved.PLATFORM_ROTATION_SIGN !== undefined) params.platform_rotation_sign = Number(saved.PLATFORM_ROTATION_SIGN);
+        if (saved.ORBIT_RADIUS !== undefined) params.orbit_radius = Number(saved.ORBIT_RADIUS);
+        if (saved.CAMERA_HEIGHT !== undefined) params.camera_height = Number(saved.CAMERA_HEIGHT);
+        if (saved.CAMERA_TILT !== undefined) params.camera_tilt_deg = Number(saved.CAMERA_TILT);
+        if (saved.CAMERA_OFFSET_Y !== undefined) params.camera_offset_y = Number(saved.CAMERA_OFFSET_Y);
+        if (saved.CAMERA_MIN_DISTANCE !== undefined) params.camera_min_distance = Number(saved.CAMERA_MIN_DISTANCE);
+        if (saved.CAMERA_MAX_DISTANCE !== undefined) params.camera_max_distance = Number(saved.CAMERA_MAX_DISTANCE);
+        if (saved.USE_GEOMETRIC_CROP !== undefined) params.use_crop = !!saved.USE_GEOMETRIC_CROP;
+        if (saved.CROP_RADIUS !== undefined) params.crop_radius = Number(saved.CROP_RADIUS);
+        if (saved.Z_MIN !== undefined) params.z_min = Number(saved.Z_MIN);
+        if (saved.Z_MAX !== undefined) params.z_max = Number(saved.Z_MAX);
+        if (saved.INVERT_X_FINAL !== undefined) params.invert_x = !!saved.INVERT_X_FINAL;
+        if (saved.USE_COLOR_FILTER !== undefined) params.use_color_filter = !!saved.USE_COLOR_FILTER;
+        if (saved.COLOR_FILTER_MODE !== undefined) params.color_filter_mode = String(saved.COLOR_FILTER_MODE);
+        if (Array.isArray(saved.TARGET_COLOR_RGB) && saved.TARGET_COLOR_RGB.length >= 3) {
+          params.target_r = Number(saved.TARGET_COLOR_RGB[0]);
+          params.target_g = Number(saved.TARGET_COLOR_RGB[1]);
+          params.target_b = Number(saved.TARGET_COLOR_RGB[2]);
+        }
+        if (saved.COLOR_TOLERANCE !== undefined) params.color_tolerance = Number(saved.COLOR_TOLERANCE);
+        if (saved.DARK_THRESHOLD !== undefined) params.dark_threshold = Number(saved.DARK_THRESHOLD);
+      } catch (_) {}
+    }
 
     function bindRangeWithNumber(id, onChange) {
       const r = document.getElementById(id);
@@ -296,16 +380,30 @@ HTML_TEMPLATE = r"""<!doctype html>
       const useColorFilter = document.getElementById("use_color_filter");
       useColorFilter.checked = params.use_color_filter;
       useColorFilter.addEventListener("change", () => { params.use_color_filter = useColorFilter.checked; onChange(); });
+      function updateColorFilterRows() {
+        const mode = params.color_filter_mode || "target";
+        document.getElementById("color_filter_target_row").style.display = mode === "target" ? "" : "none";
+        document.getElementById("color_filter_tolerance_row").style.display = mode === "target" ? "" : "none";
+        document.getElementById("color_filter_dark_row").style.display = mode === "exclude_dark" ? "" : "none";
+      }
+      document.getElementById("color_filter_mode_target").checked = (params.color_filter_mode || "target") === "target";
+      document.getElementById("color_filter_mode_dark").checked = (params.color_filter_mode || "target") === "exclude_dark";
+      document.getElementById("color_filter_mode_target").addEventListener("change", () => { params.color_filter_mode = "target"; updateColorFilterRows(); onChange(); });
+      document.getElementById("color_filter_mode_dark").addEventListener("change", () => { params.color_filter_mode = "exclude_dark"; updateColorFilterRows(); onChange(); });
       bindNumberOnly("target_r_num", "target_r", onChange);
       bindNumberOnly("target_g_num", "target_g", onChange);
       bindNumberOnly("target_b_num", "target_b", onChange);
       bindNumberOnly("color_tolerance_num", "color_tolerance", onChange);
+      bindNumberOnly("dark_threshold_num", "dark_threshold", onChange);
       document.getElementById("target_r_num").value = String(params.target_r);
       document.getElementById("target_g_num").value = String(params.target_g);
       document.getElementById("target_b_num").value = String(params.target_b);
       document.getElementById("color_tolerance_num").value = String(params.color_tolerance);
+      document.getElementById("dark_threshold_num").value = String(params.dark_threshold ?? 40);
+      updateColorFilterRows();
 
       document.getElementById("btn_save").addEventListener("click", saveJson);
+      document.getElementById("btn_save_common").addEventListener("click", saveCommonParams);
       document.getElementById("btn_reset").addEventListener("click", () => {
         userCamera = {eye: {x: 1.5, y: 1.5, z: 1.0}};
         Plotly.relayout(plotEl, {"scene.camera": userCamera});
@@ -434,10 +532,16 @@ HTML_TEMPLATE = r"""<!doctype html>
           }
           if (params.use_color_filter && hasColors && frameColors && i < frameColors.length) {
             const rgb = frameColors[i];
-            const tr = params.target_r, tg = params.target_g, tb = params.target_b;
-            const tol = params.color_tolerance;
-            if (Math.abs(rgb[0] - tr) > tol || Math.abs(rgb[1] - tg) > tol || Math.abs(rgb[2] - tb) > tol) {
-              continue;
+            const mode = params.color_filter_mode || "target";
+            if (mode === "exclude_dark") {
+              const th = params.dark_threshold ?? 40;
+              if (rgb[0] <= th && rgb[1] <= th && rgb[2] <= th) continue;
+            } else {
+              const tr = params.target_r, tg = params.target_g, tb = params.target_b;
+              const tol = params.color_tolerance;
+              if (Math.abs(rgb[0] - tr) > tol || Math.abs(rgb[1] - tg) > tol || Math.abs(rgb[2] - tb) > tol) {
+                continue;
+              }
             }
           }
           xs.push(p[0]); ys.push(p[1]); zs.push(p[2]);
@@ -529,31 +633,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     }
 
     function saveJson() {
-      const out = {
-        FRAME_ENABLED: params.frame_enabled,
-        USE_TURNTABLE: params.use_turntable,
-        TABLE_CENTER_X: params.table_center_x,
-        TABLE_CENTER_Y: params.table_center_y,
-        TABLE_CENTER_Z: params.table_center_z,
-        CAMERA_START_ANGLE_DEG: params.camera_start_angle_deg,
-        TABLE_ROTATION_STEP: params.table_rotation_step,
-        EXTRA_FRAME_ROT_Z_DEG: params.extra_frame_rot_z_deg,
-        PLATFORM_ROTATION_SIGN: params.platform_rotation_sign,
-        ORBIT_RADIUS: params.orbit_radius,
-        CAMERA_HEIGHT: params.camera_height,
-        CAMERA_TILT: params.camera_tilt_deg,
-        CAMERA_OFFSET_Y: params.camera_offset_y,
-        CAMERA_MIN_DISTANCE: params.camera_min_distance,
-        CAMERA_MAX_DISTANCE: params.camera_max_distance,
-        USE_GEOMETRIC_CROP: params.use_crop,
-        CROP_RADIUS: params.crop_radius,
-        Z_MIN: params.z_min,
-        Z_MAX: params.z_max,
-        INVERT_X_FINAL: params.invert_x,
-        USE_COLOR_FILTER: params.use_color_filter,
-        TARGET_COLOR_RGB: [params.target_r, params.target_g, params.target_b],
-        COLOR_TOLERANCE: params.color_tolerance
-      };
+      const out = buildPosePayload();
       const blob = new Blob([JSON.stringify(out, null, 2)], {type: "application/json"});
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -565,6 +645,16 @@ HTML_TEMPLATE = r"""<!doctype html>
       URL.revokeObjectURL(url);
     }
 
+    function saveCommonParams() {
+      try {
+        localStorage.setItem(COMMON_PARAMS_STORAGE_KEY, JSON.stringify(buildPosePayload()));
+        statsEl.textContent = "Common params saved. They will be auto-applied in next tuner HTML files.";
+      } catch (_) {
+        statsEl.textContent = "Failed to save common params in browser storage.";
+      }
+    }
+
+    applyCommonParamsFromStorage();
     initControls(scheduleRender);
     render();
   </script>
@@ -580,9 +670,23 @@ def downsample(points: np.ndarray, max_points: int) -> np.ndarray:
     return points[idx]
 
 
+def resolve_bundle_and_output_dir() -> tuple[Path, Path]:
+    """Find bundle produced by main.py across current and legacy output layouts."""
+    candidates = [
+        OUTPUT_DIR / BUNDLE_NAME,  # object_config layout
+        ROOT_DIR / "outputs" / "reconstruction" / BUNDLE_NAME,  # main.py layout
+        ROOT_DIR / "outputs" / "tri" / "reconstruction" / BUNDLE_NAME,  # legacy object-specific layout
+    ]
+    for bundle_path in candidates:
+        if bundle_path.exists():
+            return bundle_path, bundle_path.parent
+    # Default to object_config location when bundle is missing (for clear error path).
+    return candidates[0], OUTPUT_DIR
+
+
 def load_bundle(path: Path) -> dict:
     if not path.exists():
-        raise FileNotFoundError(f"Bundle not found: {path}. Run stereo/apps/main.py first.")
+        raise FileNotFoundError(f"Bundle not found: {path}. Run apps/main.py first.")
     data = np.load(path, allow_pickle=True)
     frame_indices = data["frame_indices"].astype(np.int32).tolist()
     clouds = [np.asarray(c, dtype=np.float32) for c in data["clouds_cam"].tolist()]
@@ -628,7 +732,8 @@ def load_bundle(path: Path) -> dict:
 
 
 def main() -> None:
-    bundle = load_bundle(BUNDLE_FILE)
+    bundle_file, output_dir = resolve_bundle_and_output_dir()
+    bundle = load_bundle(bundle_file)
     pose_file = get_pose_params_file()
     if pose_file.exists():
         try:
@@ -640,21 +745,43 @@ def main() -> None:
                 ("table_center_x", "TABLE_CENTER_X"),
                 ("table_center_y", "TABLE_CENTER_Y"),
                 ("table_center_z", "TABLE_CENTER_Z"),
+                ("camera_start_angle_deg", "CAMERA_START_ANGLE_DEG"),
+                ("rotation_step_deg", "TABLE_ROTATION_STEP"),
+                ("extra_frame_rot_z_deg", "EXTRA_FRAME_ROT_Z_DEG"),
+                ("platform_rotation_sign", "PLATFORM_ROTATION_SIGN"),
+                ("orbit_radius", "ORBIT_RADIUS"),
+                ("camera_height", "CAMERA_HEIGHT"),
+                ("camera_tilt_deg", "CAMERA_TILT"),
+                ("camera_offset_y", "CAMERA_OFFSET_Y"),
+                ("camera_min_distance", "CAMERA_MIN_DISTANCE"),
+                ("camera_max_distance", "CAMERA_MAX_DISTANCE"),
             ]:
                 if js_key in pose:
                     bundle["defaults"][key] = pose[js_key]
         except Exception:
             pass
     html = HTML_TEMPLATE.replace("__DATA_JSON__", json.dumps(bundle, ensure_ascii=False))
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    HTML_FILE.write_text(html, encoding="utf-8")
-    print(f"Built: {HTML_FILE}")
-    try:
-        webbrowser.open(HTML_FILE.as_uri())
-    except Exception:
-        pass
-
+    html_file = output_dir / HTML_NAME
+    output_dir.mkdir(parents=True, exist_ok=True)
+    html_file.write_text(html, encoding="utf-8")
+    print(f"Built: {html_file}")
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

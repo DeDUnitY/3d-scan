@@ -1,16 +1,23 @@
 {
-  "left": {
-    "exposure": -5.0,
+  "camera": {
+    "exposure": -5.1000000000000005,
     "gain": 32,
     "brightness": 0,
-    "contrast": 62,
-    "gamma": 75
+    "contrast": 60,
+    "gamma": 100
+  },
+  "left": {
+    "exposure": -5.1000000000000005,
+    "gain": 32,
+    "brightness": 0,
+    "contrast": 60,
+    "gamma": 100
   },
   "right": {
-    "exposure": -5.0,
+    "exposure": -5.1000000000000005,
     "gain": 32,
     "brightness": 0,
-    "contrast": 62,
-    "gamma": 75
-  },
+    "contrast": 60,
+    "gamma": 100
+  }
 }

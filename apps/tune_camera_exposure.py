@@ -28,6 +28,15 @@ PROP_RANGE = 100
 # Окно предпросмотра камер — Full HD для оценки качества
 PREVIEW_W, PREVIEW_H = 1920, 1080
 
+# Дефолты синхронизированы с apps/capture_frames_with_rotation.py
+CAM_DEFAULT_EXPOSURE = -4.5
+CAM_DEFAULT_GAIN = 32
+CAM_DEFAULT_BRIGHTNESS = 0
+CAM_DEFAULT_CONTRAST = 60
+CAM_DEFAULT_SATURATION = 60
+CAM_DEFAULT_GAMMA = 100
+STARTUP_WARMUP_FRAMES = 12
+
 # Параметры камеры в OpenCV (номер, имя)
 CAM_PROPS = [
     (10, "Brightness"),
@@ -44,15 +53,46 @@ CAM_PROPS = [
 ]
 
 
+def load_camera_params_blob() -> dict | None:
+    """Загрузить camera_params.json (как в tune_camera_and_disparity)."""
+    if not CAMERA_PARAMS_FILE.exists():
+        return None
+    try:
+        with open(CAMERA_PARAMS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def pick_side_blob(data: dict, side: str) -> dict | None:
+    if side in data and isinstance(data[side], dict):
+        return data[side]
+    if "camera" in data and isinstance(data["camera"], dict):
+        return data["camera"]
+    if "exposure" in data:
+        return data
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Подбор экспозиции для стереокамер")
     parser.add_argument("--left-cam", type=int, default=CAM_LEFT_INDEX, help="Индекс левой камеры")
     parser.add_argument("--right-cam", type=int, default=CAM_RIGHT_INDEX, help="Индекс правой камеры")
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Ширина кадра")
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Высота кадра")
+    parser.add_argument(
+        "--start-auto",
+        action="store_true",
+        help="Стартовать в автоэкспозиции и брать начальные значения из cap.get() (старое поведение).",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=STARTUP_WARMUP_FRAMES,
+        help="Сколько пар кадров выбросить после первого применения manual-параметров.",
+    )
     args = parser.parse_args()
 
-    # Бэкенд по умолчанию — не трогаем экспозицию при старте, картинка как раньше (авто).
     cap_left = cv2.VideoCapture(args.left_cam)
     cap_right = cv2.VideoCapture(args.right_cam)
     if not cap_left.isOpened():
@@ -64,7 +104,6 @@ def main():
     cap_left.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
     cap_right.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap_right.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    # Экспозицию не трогаем — камеры остаются в авто, картинка нормальная.
 
     # Вывод всех параметров левой камеры (какие драйвер поддерживает)
     print("--- Параметры левой камеры (что возвращает get) ---")
@@ -82,6 +121,28 @@ def main():
     def slider_from_exposure(e):
         return int(np.clip((e - EXPOSURE_MIN) / (EXPOSURE_MAX - EXPOSURE_MIN) * TRACKBAR_STEPS, 0, TRACKBAR_STEPS))
 
+    def apply_camera_params_left() -> None:
+        # Как в tune_camera_and_disparity: задаём параметры пакетом, чтобы драйвер
+        # не "терял" gain при раздельных set() вызовах.
+        cap_left.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        cap_left.set(cv2.CAP_PROP_EXPOSURE, eL)
+        cap_left.set(cv2.CAP_PROP_GAIN, gL)
+        cap_left.set(cv2.CAP_PROP_BRIGHTNESS, briL)
+        cap_left.set(cv2.CAP_PROP_CONTRAST, conL)
+        cap_left.set(cv2.CAP_PROP_SATURATION, satL)
+        cap_left.set(cv2.CAP_PROP_GAMMA, gamL)
+
+    def apply_camera_params_right() -> None:
+        # Как в tune_camera_and_disparity: задаём параметры пакетом, чтобы драйвер
+        # не "терял" gain при раздельных set() вызовах.
+        cap_right.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        cap_right.set(cv2.CAP_PROP_EXPOSURE, eR)
+        cap_right.set(cv2.CAP_PROP_GAIN, gR)
+        cap_right.set(cv2.CAP_PROP_BRIGHTNESS, briR)
+        cap_right.set(cv2.CAP_PROP_CONTRAST, conR)
+        cap_right.set(cv2.CAP_PROP_SATURATION, satR)
+        cap_right.set(cv2.CAP_PROP_GAMMA, gamR)
+
     win = "Exposure"
     win_preview = "Preview (Full HD)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
@@ -89,21 +150,50 @@ def main():
     cv2.namedWindow(win_preview, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_preview, PREVIEW_W, PREVIEW_H)
 
-    try:
-        eL = float(cap_left.get(cv2.CAP_PROP_EXPOSURE))
-        eR = float(cap_right.get(cv2.CAP_PROP_EXPOSURE))
-        eL = np.clip(eL, EXPOSURE_MIN, EXPOSURE_MAX)
-        eR = np.clip(eR, EXPOSURE_MIN, EXPOSURE_MAX)
-    except Exception:
-        eL, eR = -6.0, -6.0
+    saved_blob = load_camera_params_blob()
+    left_saved = pick_side_blob(saved_blob, "left") if isinstance(saved_blob, dict) else None
+    right_saved = pick_side_blob(saved_blob, "right") if isinstance(saved_blob, dict) else None
 
-    try:
-        gL = float(cap_left.get(cv2.CAP_PROP_GAIN))
-        gR = float(cap_right.get(cv2.CAP_PROP_GAIN))
-        gL = int(np.clip(gL, GAIN_MIN, GAIN_MAX))
-        gR = int(np.clip(gR, GAIN_MIN, GAIN_MAX))
-    except Exception:
-        gL, gR = 0, 0
+    if args.start_auto:
+        try:
+            eL = float(cap_left.get(cv2.CAP_PROP_EXPOSURE))
+            eR = float(cap_right.get(cv2.CAP_PROP_EXPOSURE))
+            eL = float(np.clip(eL, EXPOSURE_MIN, EXPOSURE_MAX))
+            eR = float(np.clip(eR, EXPOSURE_MIN, EXPOSURE_MAX))
+        except Exception:
+            eL, eR = -6.0, -6.0
+
+        try:
+            gL = float(cap_left.get(cv2.CAP_PROP_GAIN))
+            gR = float(cap_right.get(cv2.CAP_PROP_GAIN))
+            gL = int(np.clip(gL, GAIN_MIN, GAIN_MAX))
+            gR = int(np.clip(gR, GAIN_MIN, GAIN_MAX))
+        except Exception:
+            gL, gR = 0, 0
+    else:
+        def _from_saved(saved: dict | None, key: str, default):
+            if not saved:
+                return default
+            if key not in saved:
+                return default
+            return saved.get(key, default)
+
+        eL = float(
+            np.clip(
+                float(_from_saved(left_saved, "exposure", CAM_DEFAULT_EXPOSURE)),
+                EXPOSURE_MIN,
+                EXPOSURE_MAX,
+            )
+        )
+        eR = float(
+            np.clip(
+                float(_from_saved(right_saved, "exposure", CAM_DEFAULT_EXPOSURE)),
+                EXPOSURE_MIN,
+                EXPOSURE_MAX,
+            )
+        )
+        gL = int(np.clip(int(_from_saved(left_saved, "gain", CAM_DEFAULT_GAIN)), GAIN_MIN, GAIN_MAX))
+        gR = int(np.clip(int(_from_saved(right_saved, "gain", CAM_DEFAULT_GAIN)), GAIN_MIN, GAIN_MAX))
 
     def _prop(cap, prop_id, default=50):
         try:
@@ -112,76 +202,114 @@ def main():
         except Exception:
             return default
 
-    briL = _prop(cap_left, cv2.CAP_PROP_BRIGHTNESS)
-    briR = _prop(cap_right, cv2.CAP_PROP_BRIGHTNESS)
-    conL = _prop(cap_left, cv2.CAP_PROP_CONTRAST)
-    conR = _prop(cap_right, cv2.CAP_PROP_CONTRAST)
-    satL = _prop(cap_left, cv2.CAP_PROP_SATURATION)
-    satR = _prop(cap_right, cv2.CAP_PROP_SATURATION)
-    gamL = _prop(cap_left, cv2.CAP_PROP_GAMMA)
-    gamR = _prop(cap_right, cv2.CAP_PROP_GAMMA)
+    if args.start_auto:
+        briL = _prop(cap_left, cv2.CAP_PROP_BRIGHTNESS)
+        briR = _prop(cap_right, cv2.CAP_PROP_BRIGHTNESS)
+        conL = _prop(cap_left, cv2.CAP_PROP_CONTRAST)
+        conR = _prop(cap_right, cv2.CAP_PROP_CONTRAST)
+        satL = _prop(cap_left, cv2.CAP_PROP_SATURATION)
+        satR = _prop(cap_right, cv2.CAP_PROP_SATURATION)
+        gamL = _prop(cap_left, cv2.CAP_PROP_GAMMA)
+        gamR = _prop(cap_right, cv2.CAP_PROP_GAMMA)
+    else:
+        def _bri_from_saved(saved: dict | None) -> int:
+            if not saved:
+                return int(np.clip(CAM_DEFAULT_BRIGHTNESS, 0, PROP_RANGE))
+            return int(np.clip(int(saved.get("brightness", CAM_DEFAULT_BRIGHTNESS)), 0, PROP_RANGE))
+
+        def _con_from_saved(saved: dict | None) -> int:
+            if not saved:
+                return int(np.clip(CAM_DEFAULT_CONTRAST, 0, PROP_RANGE))
+            return int(np.clip(int(saved.get("contrast", CAM_DEFAULT_CONTRAST)), 0, PROP_RANGE))
+
+        def _sat_from_saved(saved: dict | None) -> int:
+            if not saved:
+                return int(np.clip(CAM_DEFAULT_SATURATION, 0, PROP_RANGE))
+            return int(np.clip(int(saved.get("saturation", CAM_DEFAULT_SATURATION)), 0, PROP_RANGE))
+
+        def _gam_from_saved(saved: dict | None) -> int:
+            if not saved:
+                return int(np.clip(CAM_DEFAULT_GAMMA, 0, PROP_RANGE))
+            return int(np.clip(int(saved.get("gamma", CAM_DEFAULT_GAMMA)), 0, PROP_RANGE))
+
+        briL = _bri_from_saved(left_saved)
+        briR = _bri_from_saved(right_saved)
+        conL = _con_from_saved(left_saved)
+        conR = _con_from_saved(right_saved)
+        satL = _sat_from_saved(left_saved)
+        satR = _sat_from_saved(right_saved)
+        gamL = _gam_from_saved(left_saved)
+        gamR = _gam_from_saved(right_saved)
+
+    if args.start_auto:
+        print("Старт: автоэкспозиция, начальные значения сняты с cap.get().")
+    else:
+        if saved_blob:
+            print(f"Старт: manual из {CAMERA_PARAMS_FILE} (где ключи отсутствуют — дефолты как в capture).")
+        else:
+            print(
+                f"Старт: manual дефолты (как в capture), т.к. {CAMERA_PARAMS_FILE} не найден/не читается."
+            )
 
     def set_exposure_left(v):
         nonlocal eL
         eL = exposure_from_slider(v)
-        cap_left.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-        cap_left.set(cv2.CAP_PROP_EXPOSURE, eL)
+        apply_camera_params_left()
 
     def set_exposure_right(v):
         nonlocal eR
         eR = exposure_from_slider(v)
-        cap_right.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-        cap_right.set(cv2.CAP_PROP_EXPOSURE, eR)
+        apply_camera_params_right()
 
     def set_gain_left(v):
         nonlocal gL
         gL = int(np.clip(v, GAIN_MIN, GAIN_MAX))
-        cap_left.set(cv2.CAP_PROP_GAIN, gL)
+        apply_camera_params_left()
 
     def set_gain_right(v):
         nonlocal gR
         gR = int(np.clip(v, GAIN_MIN, GAIN_MAX))
-        cap_right.set(cv2.CAP_PROP_GAIN, gR)
+        apply_camera_params_right()
 
     def set_bri_left(v):
         nonlocal briL
         briL = int(np.clip(v, 0, PROP_RANGE))
-        cap_left.set(cv2.CAP_PROP_BRIGHTNESS, briL)
+        apply_camera_params_left()
 
     def set_bri_right(v):
         nonlocal briR
         briR = int(np.clip(v, 0, PROP_RANGE))
-        cap_right.set(cv2.CAP_PROP_BRIGHTNESS, briR)
+        apply_camera_params_right()
 
     def set_con_left(v):
         nonlocal conL
         conL = int(np.clip(v, 0, PROP_RANGE))
-        cap_left.set(cv2.CAP_PROP_CONTRAST, conL)
+        apply_camera_params_left()
 
     def set_con_right(v):
         nonlocal conR
         conR = int(np.clip(v, 0, PROP_RANGE))
-        cap_right.set(cv2.CAP_PROP_CONTRAST, conR)
+        apply_camera_params_right()
 
     def set_sat_left(v):
         nonlocal satL
         satL = int(np.clip(v, 0, PROP_RANGE))
-        cap_left.set(cv2.CAP_PROP_SATURATION, satL)
+        apply_camera_params_left()
 
     def set_sat_right(v):
         nonlocal satR
         satR = int(np.clip(v, 0, PROP_RANGE))
-        cap_right.set(cv2.CAP_PROP_SATURATION, satR)
+        apply_camera_params_right()
 
     def set_gam_left(v):
         nonlocal gamL
         gamL = int(np.clip(v, 0, PROP_RANGE))
-        cap_left.set(cv2.CAP_PROP_GAMMA, gamL)
+        apply_camera_params_left()
 
     def set_gam_right(v):
         nonlocal gamR
         gamR = int(np.clip(v, 0, PROP_RANGE))
-        cap_right.set(cv2.CAP_PROP_GAMMA, gamR)
+        apply_camera_params_right()
 
     # Короткие подписи, чтобы не обрезались
     cv2.createTrackbar("L.Exp", win, slider_from_exposure(eL), TRACKBAR_STEPS, set_exposure_left)
@@ -194,7 +322,6 @@ def main():
     cv2.createTrackbar("Gain L=R", win, 0, 1, lambda _: None)
     cv2.createTrackbar("Reset Auto", win, 0, 1, lambda _: None)
     cv2.createTrackbar("Print", win, 0, 1, lambda _: None)
-    cv2.createTrackbar("Save JSON", win, 0, 1, lambda _: None)
     cv2.createTrackbar("Preview 0=L 1=R", win, 0, 1, lambda _: None)
     cv2.createTrackbar("L.Bri", win, briL, PROP_RANGE, set_bri_left)
     cv2.createTrackbar("R.Bri", win, briR, PROP_RANGE, set_bri_right)
@@ -205,6 +332,28 @@ def main():
     cv2.createTrackbar("L.Gam", win, gamL, PROP_RANGE, set_gam_left)
     cv2.createTrackbar("R.Gam", win, gamR, PROP_RANGE, set_gam_right)
 
+    if not args.start_auto:
+        # Применяем manual сразу (иначе первые кадры остаются в авто и «гуляют» между запусками).
+        set_exposure_left(slider_from_exposure(eL))
+        set_exposure_right(slider_from_exposure(eR))
+        set_gain_left(gL)
+        set_gain_right(gR)
+        set_bri_left(briL)
+        set_bri_right(briR)
+        set_con_left(conL)
+        set_con_right(conR)
+        set_sat_left(satL)
+        set_sat_right(satR)
+        set_gam_left(gamL)
+        set_gam_right(gamR)
+        for _ in range(max(0, args.warmup_frames)):
+            cap_left.read()
+            cap_right.read()
+        set_exposure_left(slider_from_exposure(eL))
+        set_exposure_right(slider_from_exposure(eR))
+        set_gain_left(gL)
+        set_gain_right(gR)
+
     BALANCE_STEP = 1  # шаг в шкале -13..0
 
     def reset_both_to_auto():
@@ -213,42 +362,25 @@ def main():
         print("Обе камеры переведены в автоэкспозицию. Двигай слайдер — снова ручная.")
 
     def print_params():
-        el = cap_left.get(cv2.CAP_PROP_EXPOSURE)
-        er = cap_right.get(cv2.CAP_PROP_EXPOSURE)
-        gl, gr = cap_left.get(cv2.CAP_PROP_GAIN), cap_right.get(cv2.CAP_PROP_GAIN)
-        bl, br = cap_left.get(cv2.CAP_PROP_BRIGHTNESS), cap_right.get(cv2.CAP_PROP_BRIGHTNESS)
-        cl, cr = cap_left.get(cv2.CAP_PROP_CONTRAST), cap_right.get(cv2.CAP_PROP_CONTRAST)
-        sl, sr = cap_left.get(cv2.CAP_PROP_SATURATION), cap_right.get(cv2.CAP_PROP_SATURATION)
-        gm_l, gm_r = cap_left.get(cv2.CAP_PROP_GAMMA), cap_right.get(cv2.CAP_PROP_GAMMA)
+        # Не cap.get(): на Windows драйвер часто не отражает set() — печатаем позиции слайдеров (то, что реально задаём).
+        el = exposure_from_slider(cv2.getTrackbarPos("L.Exp", win))
+        er = exposure_from_slider(cv2.getTrackbarPos("R.Exp", win))
+        gl = cv2.getTrackbarPos("L.Gain", win)
+        gr = cv2.getTrackbarPos("R.Gain", win)
+        bl = cv2.getTrackbarPos("L.Bri", win)
+        br = cv2.getTrackbarPos("R.Bri", win)
+        cl = cv2.getTrackbarPos("L.Con", win)
+        cr = cv2.getTrackbarPos("R.Con", win)
+        sl = cv2.getTrackbarPos("L.Sat", win)
+        sr = cv2.getTrackbarPos("R.Sat", win)
+        gm_l = cv2.getTrackbarPos("L.Gam", win)
+        gm_r = cv2.getTrackbarPos("R.Gam", win)
         print()
-        print("--- Текущие параметры ---")
+        print("--- Текущие параметры (по слайдерам) ---")
         print(f"  Left:  exp={el:.2f} gain={gl} bri={bl} con={cl} sat={sl} gamma={gm_l}")
         print(f"  Right: exp={er:.2f} gain={gr} bri={br} con={cr} sat={sr} gamma={gm_r}")
         print("  (для capture: --left-exposure %s --right-exposure %s)" % (el, er))
         print()
-
-    def save_params_to_json():
-        """Сохранить exp, gain, bri, con, gam в JSON для capture_frames_with_rotation.py."""
-        data = {
-            "left": {
-                "exposure": float(eL),
-                "gain": int(gL),
-                "brightness": int(briL),
-                "contrast": int(conL),
-                "gamma": int(gamL),
-            },
-            "right": {
-                "exposure": float(eR),
-                "gain": int(gR),
-                "brightness": int(briR),
-                "contrast": int(conR),
-                "gamma": int(gamR),
-            },
-        }
-        CAMERA_PARAMS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(CAMERA_PARAMS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"Параметры сохранены в {CAMERA_PARAMS_FILE}")
 
     def balance_right_to_left(mean_l, mean_r):
         """Подогнать правую под яркость левой."""
@@ -276,7 +408,7 @@ def main():
         cap_left.set(cv2.CAP_PROP_EXPOSURE, eL)
         cv2.setTrackbarPos("L.Exp", win, slider_from_exposure(eL))
 
-    print("Слайдеры: Exposure; Balance R←L / L←R; Reset auto; Print; Save JSON. Клавиши: B=balance R←L, A=reset auto, S=save JSON, Q=выход.")
+    print("Слайдеры: Exposure; Balance R←L / L←R; Reset both auto; Print. Клавиши: B=balance R←L, A=reset auto, Q=выход.")
 
     try:
         while True:
@@ -337,13 +469,13 @@ def main():
             if cv2.getTrackbarPos("Gain R=L", win) == 1:
                 gL_now = cv2.getTrackbarPos("L.Gain", win)
                 gR = int(np.clip(gL_now, GAIN_MIN, GAIN_MAX))
-                cap_right.set(cv2.CAP_PROP_GAIN, gR)
+                apply_camera_params_right()
                 cv2.setTrackbarPos("R.Gain", win, gR)
                 cv2.setTrackbarPos("Gain R=L", win, 0)
             if cv2.getTrackbarPos("Gain L=R", win) == 1:
                 gR_now = cv2.getTrackbarPos("R.Gain", win)
                 gL = int(np.clip(gR_now, GAIN_MIN, GAIN_MAX))
-                cap_left.set(cv2.CAP_PROP_GAIN, gL)
+                apply_camera_params_left()
                 cv2.setTrackbarPos("L.Gain", win, gL)
                 cv2.setTrackbarPos("Gain L=R", win, 0)
             if cv2.getTrackbarPos("Reset Auto", win) == 1:
@@ -352,9 +484,6 @@ def main():
             if cv2.getTrackbarPos("Print", win) == 1:
                 print_params()
                 cv2.setTrackbarPos("Print", win, 0)
-            if cv2.getTrackbarPos("Save JSON", win) == 1:
-                save_params_to_json()
-                cv2.setTrackbarPos("Save JSON", win, 0)
 
             key = cv2.waitKey(50)
             if key >= 0:
@@ -367,18 +496,10 @@ def main():
                     balance_right_to_left(mean_l, mean_r)
                 if key == ord("a"):
                     reset_both_to_auto()
-                if key == ord("s"):
-                    save_params_to_json()
 
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1 or cv2.getWindowProperty(win_preview, cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:
-        # Возвращаем автоэкспозицию, иначе камера остаётся в ручном режиме и в Windows показывается плохо
-        try:
-            cap_left.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-            cap_right.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        except Exception:
-            pass
         cap_left.release()
         cap_right.release()
         cv2.destroyAllWindows()

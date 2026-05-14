@@ -1,37 +1,40 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <FastLED.h>
 
-#define STEP_PIN D2
-#define DIR_PIN  D3
-#define ENABLE_PIN D1  // пин для включения/выключения двигателя (перенесен с D4)
-#define LED_PIN D4     // пин для адресного светодиода (WS2812B/NeoPixel) - D4
-// Если нужно использовать D4 для светодиода, ENABLE_PIN перенесен на D1
-// Свободные пины: D1 (GPIO5), D4 (GPIO2), D5 (GPIO14), D6 (GPIO12), D7 (GPIO13), D8 (GPIO15)
-#define NUM_LEDS 1      // количество адресных светодиодов
-// Пины микрошагов для DRV8825
-// 
-// ВАРИАНТ 1: Управление через ESP8266 (программно)
-// DRV8825 M0 -> ESP8266 D5 (GPIO14)
-// DRV8825 M1 -> ESP8266 D6 (GPIO12)
-// DRV8825 M2 -> ESP8266 D7 (GPIO13)
+// Драйвер: TMC2209
+// Подключения к ESP8266 (Wemos D1 mini):
+//   TMC2209 STEP -> D7 (GPIO13)
+//   TMC2209 DIR  -> D8 (GPIO15)
+//   TMC2209 EN   -> D0 (GPIO16)  — LOW = мотор включён, HIGH = выключен (active LOW)
 //
-// ВАРИАНТ 2: Фиксированное подключение через резисторы (без программного управления)
-// Для ПОЛНОГО ШАГА (200 шагов/оборот) - все пины должны быть LOW:
-//   DRV8825 M0 -> GND (через pull-down 10 кОм или напрямую)
-//   DRV8825 M1 -> GND (через pull-down 10 кОм или напрямую)
-//   DRV8825 M2 -> GND (через pull-down 10 кОм или напрямую)
+// Примечание по D0 (GPIO16): на этом пине при старте ESP8266 стоит HIGH,
+// что для TMC2209 означает "мотор выключен" — это безопасное состояние при загрузке.
+#define STEP_PIN D7
+#define DIR_PIN  D8
+#define ENABLE_PIN D0
+#define LASER_PIN D1   // пин для MOSFET, управляющего лазерной подсветкой
+// Для большинства MOSFET-модулей с опторазвязкой вход IN/PWM активен по LOW.
+// 1 -> LOW включает нагрузку; 0 -> обычная логика (HIGH включает).
+#define LASER_ACTIVE_LOW 0
+
+// Пины микрошагов для TMC2209 (MS1, MS2)
+// Таблица режимов TMC2209:
+//   MS1=LOW,  MS2=LOW  -> 1/8  микрошага (1600 шагов/оборот)
+//   MS1=HIGH, MS2=LOW  -> 1/32 микрошага (6400 шагов/оборот)
+//   MS1=LOW,  MS2=HIGH -> 1/64 микрошага (12800 шагов/оборот)
+//   MS1=HIGH, MS2=HIGH -> 1/16 микрошага (3200 шагов/оборот)
 //
-// Для установки HIGH (если нужен другой режим):
-//   DRV8825 M0 -> VCC (питание логики 3.3V/5V) через pull-up 10 кОм
-//   DRV8825 M1 -> VCC через pull-up 10 кОм
-//   DRV8825 M2 -> VCC через pull-up 10 кОм
+// ВАРИАНТ 1: Управление через ESP8266 (программно) — укажите пины ниже.
+// ВАРИАНТ 2: Фиксированное подключение через резисторы/перемычки к GND или VIO (3.3V).
+//   Для 1/32: MS1 -> VIO (3.3V), MS2 -> GND
 //
-// ПРИМЕЧАНИЕ: Для полного шага нужны LOW, не HIGH!
-//
-#define M0_PIN -1  // установите -1, если используете фиксированное подключение
-#define M1_PIN -1  // установите -1, если используете фиксированное подключение
-#define M2_PIN -1  // установите -1, если используете фиксированное подключение
+// Оставьте -1, если режим задаётся аппаратно (через резисторы/перемычки).
+#define MS1_PIN -1
+#define MS2_PIN -1
+// Если MS1/MS2 не подключены к ESP8266, укажите фактический режим драйвера:
+//   0=1/8, 1=1/16, 2=1/32, 3=1/64.
+// Для TMC2209 без настройки MS-пинов чаще всего это 1/8.
+#define FIXED_MICROSTEP_MODE 3
 
 const char* ssid = "Cudy-EFB4";
 const char* password = "MYpass-1";
@@ -42,48 +45,90 @@ int speedDelay = 2000;   // микросекунды между шагами (р
 float revTime = 1.2f;  // время одного шага в секундах (по умолчанию; меньше = быстрее)
 bool direction = true;
 bool isRunning = false;  // флаг выполнения последовательности
-int microstepMode = 5;  // режим микрошагов: 0=полный, 1=1/2, 2=1/4, 3=1/8, 4=1/16, 5=1/32 (1/32 по резисторам)
+// Режим микрошагов TMC2209: 0=1/8, 1=1/16, 2=1/32, 3=1/64 (по умолчанию 1/32)
+int microstepMode = FIXED_MICROSTEP_MODE;
+bool holdEnabled = false;  // true: удерживать мотор включённым между поворотами
 
-// Число шагов (позиций) за полный оборот 360°. Должно делить getStepsPerRev(), чтобы мотор
-// останавливался в полном микрошаге. Для 1/32 (6400 шагов/об): 8, 10, 16, 20, 25, 32...
-// Около 12 не подходит (6400/12 не целое). Выбрано 10 — 36° на шаг, стабильная остановка.
-const int POSITIONS_PER_TURN = 10;
+// Число шагов (позиций) за полный оборот 360°.
+// Может меняться из Web (ползунок "Количество шагов").
+int positionsPerTurn = 10;
 long currentPosition = 0;
 
-// Массив для адресных светодиодов
-CRGB leds[NUM_LEDS];
+// Состояние лазерной подсветки (через MOSFET на LASER_PIN)
+bool laserOn = false;
+int laserPwm = 0;  // 0..1023
 
-// Функция для получения количества шагов на оборот в зависимости от режима
+void setLaser(bool on) {
+  laserOn = on;
+  laserPwm = on ? 1023 : 0;
+  int pwmOut = laserPwm;
+  if (LASER_ACTIVE_LOW) {
+    pwmOut = 1023 - pwmOut;
+  }
+  analogWrite(LASER_PIN, pwmOut);
+}
+
+void setLaserPwm(int pwm) {
+  if (pwm < 0) pwm = 0;
+  if (pwm > 1023) pwm = 1023;
+  laserPwm = pwm;
+  laserOn = (pwm > 0);
+  int pwmOut = pwm;
+  if (LASER_ACTIVE_LOW) {
+    pwmOut = 1023 - pwmOut;
+  }
+  analogWrite(LASER_PIN, pwmOut);
+}
+
+void handleLaser() {
+  if (!server.hasArg("pwm")) {
+    server.send(200, "text/plain", String(laserPwm));
+    return;
+  }
+
+  int pwm = server.arg("pwm").toInt();
+  if (pwm < 0 || pwm > 1023) {
+    server.send(400, "text/plain", "Invalid pwm");
+    return;
+  }
+
+  setLaserPwm(pwm);
+  server.send(200, "text/plain", "OK");
+}
+
+// Функция для получения количества шагов на оборот в зависимости от режима (TMC2209)
 int getStepsPerRev() {
   switch(microstepMode) {
-    case 0: return 200;   // полный шаг
-    case 1: return 400;   // 1/2 шага
-    case 2: return 800;   // 1/4 шага
-    case 3: return 1600;  // 1/8 шага
-    case 4: return 3200;  // 1/16 шага
-    case 5: return 6400;  // 1/32 шага
-    default: return 200;
+    case 0: return 1600;   // 1/8  микрошага
+    case 1: return 3200;   // 1/16 микрошага
+    case 2: return 6400;   // 1/32 микрошага
+    case 3: return 12800;  // 1/64 микрошага
+    default: return 6400;
   }
 }
 
 // Функция для получения количества микрошагов в одном полном шаге
 int getMicrostepsPerFullStep() {
   switch(microstepMode) {
-    case 0: return 1;    // полный шаг
-    case 1: return 2;    // 1/2 шага
-    case 2: return 4;    // 1/4 шага
-    case 3: return 8;    // 1/8 шага
-    case 4: return 16;   // 1/16 шага
-    case 5: return 32;   // 1/32 шага
-    default: return 1;
+    case 0: return 8;
+    case 1: return 16;
+    case 2: return 32;
+    case 3: return 64;
+    default: return 32;
   }
 }
 
 // Шагов на один шаг стола (одна позиция). Целое число — мотор полностью останавливается.
 int getStepsPerFixedAngle() {
   int spr = getStepsPerRev();
-  if (spr <= 0 || POSITIONS_PER_TURN <= 0) return 0;
-  return spr / POSITIONS_PER_TURN;
+  if (spr <= 0 || positionsPerTurn <= 0) return 0;
+  return spr / positionsPerTurn;
+}
+
+int getStepsPerTurnByCount(int count) {
+  int spr = getStepsPerRev();
+  if (spr <= 0 || count <= 0) return 0;
+  return spr / count;
 }
 
 // Точный угол одного поворота в градусах (шаги / шаги_на_оборот * 360)
@@ -94,30 +139,39 @@ float getExactAngleDegrees() {
   return (float)steps * 360.0f / (float)spr;
 }
 
-// Функция для установки режима микрошагов
+float getExactAngleDegreesByCount(int count) {
+  int spr = getStepsPerRev();
+  int steps = getStepsPerTurnByCount(count);
+  if (spr <= 0) return 0.0f;
+  return (float)steps * 360.0f / (float)spr;
+}
+
+// Функция для установки режима микрошагов (TMC2209: MS1, MS2)
 void setMicrostepMode(int mode) {
-  if (M0_PIN < 0 || M1_PIN < 0 || M2_PIN < 0) {
-    Serial.println("ВНИМАНИЕ: Пины M0, M1, M2 не подключены к ESP8266!");
-    Serial.println("Настройте режим микрошагов вручную через перемычки на модуле.");
+  if (MS1_PIN < 0 || MS2_PIN < 0) {
+    Serial.println("ВНИМАНИЕ: Пины MS1, MS2 не подключены к ESP8266!");
+    Serial.println("Настройте режим микрошагов аппаратно (перемычками MS1/MS2).");
     return;
   }
   
   microstepMode = mode;
-  bool m0, m1, m2;
+  bool ms1, ms2;
   
+  // Таблица TMC2209:
+  //   MS1=L, MS2=L -> 1/8
+  //   MS1=H, MS2=H -> 1/16
+  //   MS1=H, MS2=L -> 1/32
+  //   MS1=L, MS2=H -> 1/64
   switch(mode) {
-    case 0: m0=0; m1=0; m2=0; break;  // полный шаг
-    case 1: m0=1; m1=0; m2=0; break;  // 1/2 шага
-    case 2: m0=0; m1=1; m2=0; break;  // 1/4 шага
-    case 3: m0=1; m1=1; m2=0; break;  // 1/8 шага
-    case 4: m0=0; m1=0; m2=1; break;  // 1/16 шага
-    case 5: m0=1; m1=0; m2=1; break;  // 1/32 шага
-    default: m0=0; m1=0; m2=0; break;
+    case 0: ms1=0; ms2=0; break;  // 1/8
+    case 1: ms1=1; ms2=1; break;  // 1/16
+    case 2: ms1=1; ms2=0; break;  // 1/32
+    case 3: ms1=0; ms2=1; break;  // 1/64
+    default: ms1=1; ms2=0; break; // 1/32
   }
   
-  digitalWrite(M0_PIN, m0);
-  digitalWrite(M1_PIN, m1);
-  digitalWrite(M2_PIN, m2);
+  digitalWrite(MS1_PIN, ms1);
+  digitalWrite(MS2_PIN, ms2);
   
   Serial.print("Режим микрошагов установлен: ");
   Serial.print(mode);
@@ -127,16 +181,12 @@ void setMicrostepMode(int mode) {
 }
 
 void stepMotor(int steps) {
-  // Включаем красный светодиод - индикатор движения
-  leds[0] = CRGB::Red;  // красный цвет
-  FastLED.show();
-  
   // Сначала устанавливаем направление ДО включения двигателя
   digitalWrite(DIR_PIN, direction);
-  delayMicroseconds(10);  // задержка для установки направления (минимум 5 мкс для DRV8825)
+  delayMicroseconds(10);  // время установки DIR для TMC2209 (достаточно ~20 нс, берём с запасом)
   
   // Включаем двигатель после установки направления
-  digitalWrite(ENABLE_PIN, LOW);  // включить двигатель (LOW = включен для DRV8825)
+  digitalWrite(ENABLE_PIN, LOW);  // включить двигатель (LOW = включён для TMC2209)
   delay(10);  // небольшая задержка для стабилизации
   
   // Адаптивный интервал обработки WiFi в зависимости от количества шагов
@@ -163,11 +213,9 @@ void stepMotor(int steps) {
   }
   
   delay(50);  // задержка после движения
-  digitalWrite(ENABLE_PIN, HIGH);  // выключить двигатель (отключить удержание)
-  
-  // Выключаем светодиод - движение завершено
-  leds[0] = CRGB::Black;  // выключить
-  FastLED.show();
+  if (!holdEnabled) {
+    digitalWrite(ENABLE_PIN, HIGH);  // выключить двигатель (освободить вал)
+  }
 }
 
 void handleRoot() {
@@ -412,6 +460,27 @@ select:focus {
     </div>
   </div>
 
+  <div class="settings-group">
+    <h3>🔦 Лазер</h3>
+
+    <div class="setting-item">
+      <div class="setting-label">
+        <span>Мощность лазера (PWM)</span>
+        <span class="setting-value" id="laserValue">0</span>
+      </div>
+      <input type="range" min="0" max="1023" value="0" step="1" id="laserPwm">
+      <div class="setting-hint">0 = выключен, 1023 = максимум</div>
+    </div>
+
+    <div class="button-group">
+      <button onclick="setLaserPwmValue(0)" class="btn btn-secondary">Лазер выкл</button>
+      <button onclick="setLaserPwmValue(256)" class="btn btn-secondary">25%</button>
+      <button onclick="setLaserPwmValue(512)" class="btn btn-secondary">50%</button>
+      <button onclick="setLaserPwmValue(768)" class="btn btn-secondary">75%</button>
+      <button onclick="setLaserPwmValue(1023)" class="btn btn-secondary">100%</button>
+    </div>
+  </div>
+
   <div class="button-group">
     <button onclick="startSequence()" id="startBtn" class="btn btn-primary">
       ▶ Запустить последовательность
@@ -431,6 +500,7 @@ select:focus {
 
 <script>
 let isRunning = false;
+let laserUpdateTimer = null;
 
 // Сохранение настроек в localStorage
 function saveSettings() {
@@ -470,6 +540,11 @@ function updateDisplay() {
   document.getElementById('delay').innerHTML = pauseTime;
   
   saveSettings(); // Сохраняем при каждом изменении
+}
+
+function updateLaserDisplay() {
+  const laserPwm = document.getElementById('laserPwm').value;
+  document.getElementById('laserValue').innerHTML = laserPwm;
 }
 
 function showStatus(message, type = 'info') {
@@ -519,13 +594,48 @@ function stopSequence() {
 
 function sendSingle(dir) {
   let t = document.getElementById('revTime').value;
+  let count = parseInt(document.getElementById('rotations').value);
   // dir: 1 = CW, 0 = CCW (явно передаём число как строку)
-  fetch('/move?revTime=' + encodeURIComponent(t) + '&dir=' + (dir ? '1' : '0'));
+  fetch('/move?revTime=' + encodeURIComponent(t) + '&count=' + encodeURIComponent(count) + '&dir=' + (dir ? '1' : '0'));
+}
+
+function sendLaserPwm() {
+  const pwm = document.getElementById('laserPwm').value;
+  fetch('/laser?pwm=' + encodeURIComponent(pwm))
+    .catch(() => showStatus('❌ Ошибка управления лазером', 'error'));
+}
+
+function queueLaserPwmUpdate() {
+  updateLaserDisplay();
+  if (laserUpdateTimer) {
+    clearTimeout(laserUpdateTimer);
+  }
+  laserUpdateTimer = setTimeout(sendLaserPwm, 120);
+}
+
+function setLaserPwmValue(pwm) {
+  document.getElementById('laserPwm').value = pwm;
+  updateLaserDisplay();
+  sendLaserPwm();
+}
+
+function loadLaserPwm() {
+  fetch('/laser')
+    .then(r => r.text())
+    .then(text => {
+      const pwm = parseInt(text, 10);
+      if (!isNaN(pwm)) {
+        document.getElementById('laserPwm').value = pwm;
+        updateLaserDisplay();
+      }
+    })
+    .catch(() => {});
 }
 
 // Загрузка точного угла с платы
 function loadExactAngle() {
-  fetch('/angle')
+  const rotations = parseInt(document.getElementById('rotations').value);
+  fetch('/angle?count=' + encodeURIComponent(rotations))
     .then(r => r.text())
     .then(text => {
       const val = parseFloat(text);
@@ -540,11 +650,16 @@ function loadExactAngle() {
 document.addEventListener('DOMContentLoaded', function() {
   loadSettings(); // Загружаем сохраненные настройки
   loadExactAngle(); // Показываем точный угол поворота
+  loadLaserPwm(); // Показываем текущее значение ШИМ лазера
   
-  document.getElementById('rotations').oninput = updateDisplay;
+  document.getElementById('rotations').oninput = () => {
+    updateDisplay();
+    loadExactAngle();
+  };
   document.getElementById('revTime').oninput = updateDisplay;
   document.getElementById('pauseTime').oninput = updateDisplay;
   document.getElementById('direction').onchange = saveSettings;
+  document.getElementById('laserPwm').oninput = queueLaserPwmUpdate;
 });
 </script>
 
@@ -561,11 +676,14 @@ void handleMove() {
   ESP.wdtFeed();  // Сброс watchdog перед началом обработки
   
   revTime = server.arg("revTime").toFloat();
+  int count = server.hasArg("count") ? server.arg("count").toInt() : positionsPerTurn;
+  if (count < 1) count = 1;
+  positionsPerTurn = count;
   // Явно парсим dir: 1 = CW, 0 = CCW (toInt() надёжнее сравнения строк)
   direction = (server.arg("dir").toInt() == 1);
  
   // Всегда одно и то же число шагов — все повороты на одинаковый угол
-  performRotationSteps(getStepsPerFixedAngle(), revTime, direction);
+  performRotationSteps(getStepsPerTurnByCount(count), revTime, direction);
   
   ESP.wdtFeed();  // Сброс watchdog после выполнения
 
@@ -587,6 +705,7 @@ void handleSequence() {
   bool dir = (server.arg("dir").toInt() == 1);  // 1 = CW, 0 = CCW
   
   if (count < 1) count = 1;
+  positionsPerTurn = count;
   if (revTime < 0.1) revTime = 0.1;
   if (pauseTime < 0) pauseTime = 0;
   
@@ -601,7 +720,7 @@ void handleSequence() {
   Serial.println(" сек");
   
   // Один и тот же шаг на каждом повороте (без распределения и округлений)
-  int stepsThisTurn = getStepsPerFixedAngle();
+  int stepsThisTurn = getStepsPerTurnByCount(count);
 
   for (int i = 0; i < count && isRunning; i++) {
     Serial.print("Поворот ");
@@ -624,24 +743,20 @@ void handleSequence() {
   }
   
   isRunning = false;
-  // Выключаем светодиод после завершения
-  leds[0] = CRGB::Black;
-  FastLED.show();
   Serial.println("Последовательность завершена");
 }
 
 void handleStop() {
   isRunning = false;
-  // Выключаем светодиод при остановке
-  leds[0] = CRGB::Black;
-  FastLED.show();
   server.send(200, "text/plain", "Stopped");
   Serial.println("Последовательность остановлена пользователем");
 }
 
 void handleAngle() {
   // Возвращает точный угол одного поворота в градусах (для отображения на странице)
-  float angle = getExactAngleDegrees();
+  int count = server.hasArg("count") ? server.arg("count").toInt() : positionsPerTurn;
+  if (count < 1) count = 1;
+  float angle = getExactAngleDegreesByCount(count);
   server.send(200, "text/plain", String(angle, 4));
 }
 
@@ -675,7 +790,7 @@ void performSingleRotation(float rotationTime, bool dir) {
 void handleSetMicrostep() {
   if (server.hasArg("mode")) {
     int mode = server.arg("mode").toInt();
-    if (mode >= 0 && mode <= 5) {
+    if (mode >= 0 && mode <= 3) {
       setMicrostepMode(mode);
       server.send(200, "text/plain", "OK");
     } else {
@@ -696,46 +811,34 @@ void setup() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
   pinMode(ENABLE_PIN, OUTPUT);
-  digitalWrite(ENABLE_PIN, HIGH);  // выключить двигатель по умолчанию
+  digitalWrite(ENABLE_PIN, HIGH);  // выключить двигатель по умолчанию (HIGH = off для TMC2209)
+  pinMode(LASER_PIN, OUTPUT);
+  analogWriteRange(1023);
+  analogWriteFreq(1000);
+  // Принудительно выключаем лазер при загрузке
+  setLaser(false);
   
-  // Инициализация адресных светодиодов
-  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
-  FastLED.setBrightness(255);  // яркость (0-255), можно настроить
-  
-  // Принудительно выключаем светодиод (D4 может быть активен при загрузке)
-  leds[0] = CRGB::Black;  // выключить светодиод
-  FastLED.show();
-  delay(10);  // небольшая задержка
-  leds[0] = CRGB::Black;  // повторно выключаем для надежности
-  FastLED.show();
-  
-  // Настройка режима микрошагов (M0, M1, M2)
-  // Если пины подключены к ESP8266, укажите номера пинов в начале файла
-  if (M0_PIN >= 0) {
-    pinMode(M0_PIN, OUTPUT);
+  // Настройка режима микрошагов TMC2209 (MS1, MS2)
+  if (MS1_PIN >= 0) {
+    pinMode(MS1_PIN, OUTPUT);
   }
-  if (M1_PIN >= 0) {
-    pinMode(M1_PIN, OUTPUT);
-  }
-  if (M2_PIN >= 0) {
-    pinMode(M2_PIN, OUTPUT);
+  if (MS2_PIN >= 0) {
+    pinMode(MS2_PIN, OUTPUT);
   }
   
-  // Режим микрошагов установлен физически через резисторы (1/32 шага)
-  // Если пины подключены к ESP8266, можно управлять программно
-  if (M0_PIN >= 0 && M1_PIN >= 0 && M2_PIN >= 0) {
-    // Пины подключены - устанавливаем режим программно
-    setMicrostepMode(microstepMode);  // используем значение по умолчанию (1/32 шага)
+  if (MS1_PIN >= 0 && MS2_PIN >= 0) {
+    setMicrostepMode(microstepMode);
   } else {
-    // Пины не подключены - режим установлен физически
-    Serial.print("Режим микрошагов установлен физически: 1/32 шага (");
+    Serial.print("MS1/MS2 не подключены к ESP8266. Используем FIXED_MICROSTEP_MODE=");
+    Serial.println(microstepMode);
+    Serial.print("Расчёт выполнен для ");
     Serial.print(getStepsPerRev());
-    Serial.println(" шагов/оборот)");
-    Serial.println("Пины M0, M1, M2 не подключены к ESP8266 - управление через резисторы.");
+    Serial.println(" шагов/оборот.");
+    Serial.println("Если реальный режим драйвера другой, угол поворота будет неверным.");
   }
 
   Serial.print("Позиций за оборот: ");
-  Serial.println(POSITIONS_PER_TURN);
+  Serial.println(positionsPerTurn);
   Serial.print("Шагов на один шаг стола: ");
   Serial.println(getStepsPerFixedAngle());
   Serial.print("Угол одного шага: ");
@@ -760,6 +863,7 @@ void setup() {
   server.on("/sequence", handleSequence);
   server.on("/stop", handleStop);
   server.on("/angle", handleAngle);
+  server.on("/laser", handleLaser);
   server.on("/setMicrostep", handleSetMicrostep);
   server.begin();
 }
@@ -775,6 +879,45 @@ void processSerialCommand() {
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
   if (cmd.length() == 0) return;
+
+  // Управление лазерной подсветкой:
+  //   LASER_ON  / LASER 1  — включить лазер, ответ OK
+  //   LASER_OFF / LASER 0  — выключить лазер, ответ OK
+  if (cmd == "LASER_ON" || cmd == "LASER 1") {
+    setLaser(true);
+    Serial.println("OK");
+    return;
+  }
+  if (cmd == "LASER_OFF" || cmd == "LASER 0") {
+    setLaser(false);
+    Serial.println("OK");
+    return;
+  }
+  //   LASER_PWM <0..1023> — установить мощность через PWM, ответ OK
+  if (cmd.startsWith("LASER_PWM ")) {
+    String value = cmd.substring(String("LASER_PWM ").length());
+    value.trim();
+    setLaserPwm(value.toInt());
+    Serial.println("OK");
+    return;
+  }
+
+  // Управление удержанием мотора:
+  //   HOLD_ON / HOLD 1 / H1  — включить удержание (EN=LOW), ответ OK
+  //   HOLD_OFF / HOLD 0 / H0 — выключить удержание (EN=HIGH), ответ OK
+  //   STOP / S               — синоним HOLD_OFF, ответ OK
+  if (cmd == "HOLD_ON" || cmd == "HOLD 1" || cmd == "H1") {
+    holdEnabled = true;
+    digitalWrite(ENABLE_PIN, LOW);
+    Serial.println("OK");
+    return;
+  }
+  if (cmd == "HOLD_OFF" || cmd == "HOLD 0" || cmd == "H0" || cmd == "STOP" || cmd == "S") {
+    holdEnabled = false;
+    digitalWrite(ENABLE_PIN, HIGH);
+    Serial.println("OK");
+    return;
+  }
 
   // MOVE_DEG <angle_deg> [time_sec] [dir] — поворот на угол в градусах
   if (cmd.startsWith("MOVE_DEG ") || cmd.startsWith("MOVE_D ")) {

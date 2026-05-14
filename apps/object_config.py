@@ -44,7 +44,8 @@ def get_sgbm_params_file() -> Path:
 
 def get_object_dir() -> Path:
     """Корневая папка объекта: outputs/<OBJECT_NAME>/"""
-    return ROOT_DIR / "outputs" / OBJECT_NAME
+    #return ROOT_DIR / "outputs" / OBJECT_NAME
+    return ROOT_DIR / "outputs"
 
 
 def get_frames_dir() -> Path:
@@ -55,6 +56,16 @@ def get_frames_dir() -> Path:
 def get_reconstruction_dir() -> Path:
     """Папка реконструкции: outputs/<OBJECT_NAME>/reconstruction/"""
     return get_object_dir() / "reconstruction"
+
+
+def get_cad_models_dir() -> Path:
+    """Папка с эталонными CAD-моделями для сравнения: outputs/<OBJECT_NAME>/cad/"""
+    return get_object_dir() / "cad"
+
+
+def get_default_cad_path() -> Path:
+    """Путь к CAD-модели по умолчанию (reference.stl в папке cad/)."""
+    return get_cad_models_dir() / "reference.stl"
 
 
 def get_capture_metadata_file() -> Path:

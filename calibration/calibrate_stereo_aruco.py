@@ -4,21 +4,17 @@
 находит углы ChArUco на обеих камерах (только общие для левого и правого кадра),
 вызывает cv2.stereoCalibrate и cv2.stereoRectify, сохраняет результат в NPZ и JSON.
 Параметры доски совпадают с capture_stereo_calib_images.py.
-
-Сохраняет в configs/stereo_calib.npz (через object_config — откуда загружает main.py).
 """
 import json
-import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT_DIR / "apps"))
-from object_config import get_calibration_file, get_configs_dir
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
 IMAGES_DIR = ROOT_DIR / "calibration" / "images_stereo"
+OUTPUT_DIR = ROOT_DIR / "outputs" / "calibration"
 
 # Параметры ChArUco доски (как в capture_stereo_calib_images.py)
 SQUARES_X = 11
@@ -133,7 +129,7 @@ def calibrate_stereo(
     swap_left_right=False,
 ):
     images_dir = Path(images_dir or IMAGES_DIR)
-    output_npz = output_npz or str(get_calibration_file())
+    output_npz = output_npz or str(OUTPUT_DIR / "stereo_calib.npz")
 
     pairs = _collect_stereo_pairs(images_dir)
     if len(pairs) < min_pairs:
@@ -229,7 +225,7 @@ def calibrate_stereo(
         alpha=0.0,
     )
 
-    get_configs_dir().mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     np.savez(
         output_npz,
         rms=float(rms),
