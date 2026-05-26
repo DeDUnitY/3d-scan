@@ -1,6 +1,7 @@
 """
 Захват пар кадров с двух камер для стереокалибровки.
-Если на ОБЕИХ камерах найдено достаточно маркеров ChArUco — сохраняет пару (left, right).
+Пара сохраняется вручную по клавише, только если на ОБЕИХ камерах найдено
+достаточно маркеров ChArUco.
 Камеры в стандартных настройках (автоэкспозиция, без подстройки под запись объекта).
 """
 import cv2
@@ -28,8 +29,10 @@ DICT_NAME = "DICT_4X4_1000"
 MIN_MARKERS_RATIO = 0.6
 # Минимальное абсолютное число маркеров в кадре
 MIN_MARKERS_ABS = 15
-# Минимальный разрыв по кадрам между автосохранениями пар
+# Минимальная пауза по кадрам между ручными сохранениями пар
 MIN_FRAME_GAP = 30
+# How many frames to show the "Saved" overlay
+FLASH_FRAMES = 10
 
 
 def _get_aruco_dictionary():
@@ -116,6 +119,26 @@ def _process_frame(frame, dictionary, params, board_id_set, total_markers):
     return display, len(unique_ids), detected_ratio, polarity, ok
 
 
+def _draw_center_message(image, text, font_scale=1.2, thickness=3):
+    """Рисует текст по центру кадра с полупрозрачным фоном."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    h, w = image.shape[:2]
+    x = (w - text_w) // 2
+    y = (h + text_h) // 2
+    pad = 16
+    overlay = image.copy()
+    cv2.rectangle(
+        overlay,
+        (x - pad, y - text_h - pad),
+        (x + text_w + pad, y + baseline + pad),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
+    cv2.putText(image, text, (x, y), font, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
+
+
 def main():
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -146,11 +169,13 @@ def main():
     print("Стерео захват: две камеры запущены (стандартные настройки, автоэкспозиция).")
     print(f"Left:  {w1}x{h1}, Right: {w2}x{h2}")
     print(f"Пара сохраняется только когда на ОБЕИХ камерах найдено >= {MIN_MARKERS_ABS} маркеров (>= {MIN_MARKERS_RATIO*100:.0f}%).")
-    print("Нажмите 'q' чтобы выйти.")
+    print("Зафиксируйте доску, затем нажмите 's' или Space для снимка. 'q' — выход.")
 
     saved_count = 0
     frame_idx = 0
     last_saved_frame = -MIN_FRAME_GAP
+    flash_until_frame = -1
+    flash_message = ""
 
     window_name = "Stereo calib capture (Left | Right)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -195,35 +220,59 @@ def main():
         combined = np.hstack([left_resized, right_resized])
 
         both_ok = ok_left and ok_right
-        if both_ok:
-            status_global = "OK: auto-save when gap reached"
+        save_ready = (frame_idx - last_saved_frame) >= MIN_FRAME_GAP
+        if both_ok and save_ready:
+            status_global = "READY: press S or Space to save"
             color_global = (0, 255, 0)
+        elif both_ok:
+            frames_left = MIN_FRAME_GAP - (frame_idx - last_saved_frame)
+            status_global = f"WAIT: pause before next save ({frames_left} frames)"
+            color_global = (0, 255, 255)
         else:
-            status_global = "Need markers on BOTH cameras"
+            status_global = "WAIT: need markers on BOTH cameras"
             color_global = (0, 0, 255)
         cv2.putText(
             combined, status_global,
             (10, target_h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color_global, 2
         )
 
-        # Автосохранение пары только если на обеих камерах достаточно маркеров
-        if (
-            both_ok
-            and (frame_idx - last_saved_frame) >= MIN_FRAME_GAP
-        ):
+        if frame_idx <= flash_until_frame and flash_message:
+            _draw_center_message(combined, flash_message)
+
+        cv2.imshow(window_name, combined)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+
+        if key in (ord('s'), ord(' ')):
+            if not save_ready:
+                frames_left = MIN_FRAME_GAP - (frame_idx - last_saved_frame)
+                print(f"Снимок не сохранен: подождите еще {frames_left} кадров.")
+                flash_message = "Wait before next save"
+                flash_until_frame = frame_idx + FLASH_FRAMES
+                frame_idx += 1
+                continue
+
+            if not both_ok:
+                print(
+                    "Снимок не сохранен: недостаточно маркеров "
+                    f"(left {n_left}/{total_markers}, right {n_right}/{total_markers})."
+                )
+                flash_message = "Not enough markers"
+                flash_until_frame = frame_idx + FLASH_FRAMES
+                frame_idx += 1
+                continue
+
             # Сохраняем с именами left/right: кадр с cap_left -> _right.png, cap_right -> _left.png (исправлено «задом наперёд»)
             path_left = IMAGES_DIR / f"capture_{saved_count:04d}_left.png"
             path_right = IMAGES_DIR / f"capture_{saved_count:04d}_right.png"
             cv2.imwrite(str(path_left), frame_right)
             cv2.imwrite(str(path_right), frame_left)
             print(f"Saved pair #{saved_count}: left {n_left} markers, right {n_right} markers")
+            flash_message = f"Saved #{saved_count + 1}"
+            flash_until_frame = frame_idx + FLASH_FRAMES
             saved_count += 1
             last_saved_frame = frame_idx
-
-        cv2.imshow(window_name, combined)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
 
         frame_idx += 1
 

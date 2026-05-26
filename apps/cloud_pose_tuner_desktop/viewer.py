@@ -22,7 +22,7 @@ class DesktopCloudPoseTunerApp:
         self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = rendering.Open3DScene(self.window.renderer)
         self.scene_widget.scene.set_background([0.07, 0.07, 0.07, 1.0])
-        self.scene_widget.scene.show_axes(True)
+        self.scene_widget.scene.show_axes(self.state.show_axes)
 
         em = self.window.theme.font_size
         self.panel_width = int(30 * em)
@@ -41,12 +41,20 @@ class DesktopCloudPoseTunerApp:
         self._section_expanded: dict[str, bool] = {}
         self._section_buttons: dict[str, gui.Button] = {}
         self._section_contents: dict[str, gui.Vert] = {}
+        self._suppress_frame_callback = False
+        self.param_number_edits: dict[str, gui.NumberEdit] = {}
+        self.frame_interval = 2
+        self.auto_center_search_radius = 5.0
+        self.auto_center_max_points = 6000
+        self.auto_center_pair_start = 0
+        self.auto_center_pair_gap = 1
         self.camera_pivot_mode = "visible_bbox_center"
         self.position_param_step = 0.1
+        self.show_crop_radius_guide = True
         self._param_labels = {
             "camera_start_angle_deg": "Start camera angle (deg)",
             "table_rotation_step": "Turntable step per frame (deg)",
-            "extra_frame_rot_z_deg": "Extra frame Z rotation (deg)",
+            "extra_frame_rot_z_deg": "Extra turntable-axis rotation per frame (deg)",
             "platform_rotation_sign": "Rotation direction (-1 or 1)",
             "use_turntable": "Use turntable model",
             "table_center_x": "Turntable center X",
@@ -225,6 +233,8 @@ class DesktopCloudPoseTunerApp:
         display = self._add_collapsible_section("display", "Display", expanded=True)
         self._add_checkbox_to(display, "Show merged point cloud", self.state.show_merged, self._on_toggle_show_merged)
         self._add_checkbox_to(display, "Show reference mesh (CAD)", self.state.show_reference, self._on_toggle_show_reference)
+        self._add_checkbox_to(display, "Show axes", self.state.show_axes, self._on_toggle_show_axes)
+        self._add_checkbox_to(display, "Show crop radius guide", self.show_crop_radius_guide, self._on_toggle_crop_radius_guide)
         self._add_checkbox_to(display, "White background", self.state.white_background, self._on_toggle_white_background)
 
         self.color_mode = gui.Combobox()
@@ -254,11 +264,11 @@ class DesktopCloudPoseTunerApp:
         pose = self._add_collapsible_section("pose", "Pose alignment", expanded=False)
         self._add_number_to(pose, "Start camera angle (deg)", self.state.params.camera_start_angle_deg, self._bind_param("camera_start_angle_deg"), minimum=-180.0, maximum=180.0, step=lambda: self.position_param_step)
         self._add_number_to(pose, "Turntable step per frame (deg)", self.state.params.table_rotation_step, self._bind_param("table_rotation_step"), minimum=-180.0, maximum=180.0, step=lambda: self.position_param_step)
-        self._add_number_to(pose, "Extra frame Z rotation (deg)", self.state.params.extra_frame_rot_z_deg, self._bind_param("extra_frame_rot_z_deg"), minimum=-180.0, maximum=180.0, step=lambda: self.position_param_step)
+        self._add_number_to(pose, "Extra turntable-axis rotation per frame (deg)", self.state.params.extra_frame_rot_z_deg, self._bind_param("extra_frame_rot_z_deg"), minimum=-180.0, maximum=180.0, step=lambda: self.position_param_step)
         self._add_number_to(pose, "Rotation direction (-1 or 1)", self.state.params.platform_rotation_sign, self._bind_param("platform_rotation_sign"), minimum=-1, maximum=1, is_int=True)
         self._add_checkbox_to(pose, "Use turntable model", self.state.params.use_turntable, self._bind_bool("use_turntable"))
-        self._add_number_to(pose, "Turntable center X", self.state.params.table_center_x, self._bind_param("table_center_x"), step=lambda: self.position_param_step)
-        self._add_number_to(pose, "Turntable center Y", self.state.params.table_center_y, self._bind_param("table_center_y"), step=lambda: self.position_param_step)
+        self.param_number_edits["table_center_x"] = self._add_number_to(pose, "Turntable center X", self.state.params.table_center_x, self._bind_param("table_center_x"), step=lambda: self.position_param_step)
+        self.param_number_edits["table_center_y"] = self._add_number_to(pose, "Turntable center Y", self.state.params.table_center_y, self._bind_param("table_center_y"), step=lambda: self.position_param_step)
         self._add_number_to(pose, "Turntable center Z", self.state.params.table_center_z, self._bind_param("table_center_z"), step=lambda: self.position_param_step)
         self._add_number_to(pose, "Camera orbit radius", self.state.params.orbit_radius, self._bind_param("orbit_radius"), minimum=-2000.0, maximum=2000.0, step=lambda: self.position_param_step)
         self._add_number_to(pose, "Camera height", self.state.params.camera_height, self._bind_param("camera_height"), minimum=-2000.0, maximum=2000.0, step=lambda: self.position_param_step)
@@ -300,12 +310,87 @@ class DesktopCloudPoseTunerApp:
 
         self.panel.add_fixed(self.margin)
         frames = self._add_collapsible_section("frames", "Frames", expanded=False)
+        self._add_number_to(
+            frames,
+            "Frame interval N",
+            self.frame_interval,
+            self._on_frame_interval_changed,
+            minimum=1,
+            maximum=1000,
+            is_int=True,
+        )
+        frame_buttons_row = gui.Horiz(self.margin)
+        enable_all_button = gui.Button("Enable all")
+        disable_all_button = gui.Button("Disable all")
+        keep_every_button = gui.Button("Keep every N")
+        disable_every_button = gui.Button("Disable every N")
+        enable_all_button.set_on_clicked(self._enable_all_frames)
+        disable_all_button.set_on_clicked(self._disable_all_frames)
+        keep_every_button.set_on_clicked(self._keep_every_n_frames)
+        disable_every_button.set_on_clicked(self._disable_every_n_frames)
+        frame_buttons_row.add_child(enable_all_button)
+        frame_buttons_row.add_child(disable_all_button)
+        frames.add_child(frame_buttons_row)
+        frame_pattern_row = gui.Horiz(self.margin)
+        frame_pattern_row.add_child(keep_every_button)
+        frame_pattern_row.add_child(disable_every_button)
+        frames.add_child(frame_pattern_row)
+        self._add_number_to(
+            frames,
+            "Auto center search radius",
+            self.auto_center_search_radius,
+            self._on_auto_center_search_radius_changed,
+            minimum=0.01,
+            maximum=1000.0,
+            step=lambda: self.position_param_step,
+        )
+        self._add_number_to(
+            frames,
+            "Auto center max points/frame",
+            self.auto_center_max_points,
+            self._on_auto_center_max_points_changed,
+            minimum=100,
+            maximum=100000,
+            is_int=True,
+        )
+        self._add_number_to(
+            frames,
+            "Auto center pair start index",
+            self.auto_center_pair_start,
+            self._on_auto_center_pair_start_changed,
+            minimum=0,
+            maximum=100000,
+            is_int=True,
+        )
+        self._add_number_to(
+            frames,
+            "Auto center pair gap",
+            self.auto_center_pair_gap,
+            self._on_auto_center_pair_gap_changed,
+            minimum=1,
+            maximum=100000,
+            is_int=True,
+        )
+        auto_center_button = gui.Button("Auto fit center XY from first enabled pair")
+        auto_center_button.set_on_clicked(self._auto_tune_center_xy)
+        frames.add_child(auto_center_button)
+        frames.add_child(gui.Label("Frame label color matches Per-frame colors mode."))
         for frame_id in self.state.frame_ids():
-            checkbox = gui.Checkbox(f"Enable frame {frame_id}")
+            row = gui.Horiz(self.margin)
+            checkbox = gui.Checkbox("Enable")
+            frame_color = self.state.frame_color(frame_id)
+            frame_label = gui.Label(f"frame {frame_id}")
+            frame_label.text_color = gui.Color(
+                float(frame_color[0]),
+                float(frame_color[1]),
+                float(frame_color[2]),
+            )
             checkbox.checked = self.state.params.frame_enabled.get(frame_id, True)
             checkbox.set_on_checked(self._on_frame_enabled(frame_id))
             self.frame_checks[frame_id] = checkbox
-            frames.add_child(checkbox)
+            row.add_child(checkbox)
+            row.add_child(frame_label)
+            frames.add_child(row)
 
         self.panel.add_fixed(self.margin)
         actions = self._add_collapsible_section("actions", "Actions", expanded=True)
@@ -389,6 +474,26 @@ class DesktopCloudPoseTunerApp:
             self.position_param_step = 0.1
         self.status_label.text = f"Position step: {self.position_param_step:g}"
 
+    def _on_frame_interval_changed(self, value: int) -> None:
+        self.frame_interval = max(int(value), 1)
+        self.status_label.text = f"Frame interval N: {self.frame_interval}"
+
+    def _on_auto_center_search_radius_changed(self, value: float) -> None:
+        self.auto_center_search_radius = max(float(value), 0.01)
+        self.status_label.text = f"Auto center search radius: {self.auto_center_search_radius:g}"
+
+    def _on_auto_center_max_points_changed(self, value: int) -> None:
+        self.auto_center_max_points = max(int(value), 100)
+        self.status_label.text = f"Auto center max points/frame: {self.auto_center_max_points}"
+
+    def _on_auto_center_pair_start_changed(self, value: int) -> None:
+        self.auto_center_pair_start = max(int(value), 0)
+        self.status_label.text = f"Auto center pair start index: {self.auto_center_pair_start}"
+
+    def _on_auto_center_pair_gap_changed(self, value: int) -> None:
+        self.auto_center_pair_gap = max(int(value), 1)
+        self.status_label.text = f"Auto center pair gap: {self.auto_center_pair_gap}"
+
     def _on_toggle_show_merged(self, value: bool) -> None:
         self.state.show_merged = bool(value)
         self._apply_visibility()
@@ -396,6 +501,25 @@ class DesktopCloudPoseTunerApp:
     def _on_toggle_show_reference(self, value: bool) -> None:
         self.state.show_reference = bool(value)
         self._apply_visibility()
+
+    def _on_toggle_show_axes(self, value: bool) -> None:
+        self.state.show_axes = bool(value)
+        self.scene_widget.scene.show_axes(self.state.show_axes)
+        self._replace_table_center_marker()
+        self.window.post_redraw()
+
+    def _replace_table_center_marker(self) -> None:
+        marker = self._build_table_center_marker() if self.state.show_axes else None
+        self._replace_geometry("table_center_marker", marker, self._material_for_reference())
+
+    def _on_toggle_crop_radius_guide(self, value: bool) -> None:
+        self.show_crop_radius_guide = bool(value)
+        self._replace_geometry(
+            "crop_radius_guide",
+            self._build_crop_radius_guide(),
+            self._material_for_lines([1.0, 0.72, 0.1, 1.0]),
+        )
+        self.window.post_redraw()
 
     def _on_toggle_white_background(self, value: bool) -> None:
         self.state.white_background = bool(value)
@@ -407,10 +531,85 @@ class DesktopCloudPoseTunerApp:
 
     def _on_frame_enabled(self, frame_id: int):
         def callback(checked: bool) -> None:
+            if self._suppress_frame_callback:
+                return
             self.state.params.frame_enabled[frame_id] = bool(checked)
             self._refresh_scene(reset_camera=False, status=f"Frame {frame_id}: {'enabled' if checked else 'disabled'}")
 
         return callback
+
+    def _set_frames_enabled(self, enabled_by_frame: dict[int, bool], status: str) -> None:
+        self._suppress_frame_callback = True
+        try:
+            for frame_id in self.state.frame_ids():
+                enabled = bool(enabled_by_frame.get(frame_id, False))
+                self.state.params.frame_enabled[frame_id] = enabled
+                checkbox = self.frame_checks.get(frame_id)
+                if checkbox is not None:
+                    checkbox.checked = enabled
+        finally:
+            self._suppress_frame_callback = False
+        self._refresh_scene(reset_camera=False, status=status)
+
+    def _enable_all_frames(self) -> None:
+        self._set_frames_enabled(
+            {frame_id: True for frame_id in self.state.frame_ids()},
+            status="Enabled all frames",
+        )
+
+    def _disable_all_frames(self) -> None:
+        self._set_frames_enabled(
+            {frame_id: False for frame_id in self.state.frame_ids()},
+            status="Disabled all frames",
+        )
+
+    def _keep_every_n_frames(self) -> None:
+        interval = max(int(self.frame_interval), 1)
+        enabled_by_frame = {
+            frame_id: index % interval == 0
+            for index, frame_id in enumerate(self.state.frame_ids())
+        }
+        self._set_frames_enabled(enabled_by_frame, status=f"Kept every {interval} frame")
+
+    def _disable_every_n_frames(self) -> None:
+        interval = max(int(self.frame_interval), 1)
+        enabled_by_frame = {
+            frame_id: (index + 1) % interval != 0
+            for index, frame_id in enumerate(self.state.frame_ids())
+        }
+        self._set_frames_enabled(enabled_by_frame, status=f"Disabled every {interval} frame")
+
+    def _sync_param_number(self, attr_name: str) -> None:
+        widget = self.param_number_edits.get(attr_name)
+        if widget is None:
+            return
+        widget.double_value = float(getattr(self.state.params, attr_name))
+
+    def _auto_tune_center_xy(self) -> None:
+        self.status_label.text = "Auto fitting center XY..."
+        self.window.post_redraw()
+        try:
+            result = self.state.auto_tune_center_xy(
+                search_radius=self.auto_center_search_radius,
+                max_points_per_frame=self.auto_center_max_points,
+                pair_start_index=self.auto_center_pair_start,
+                pair_gap=self.auto_center_pair_gap,
+            )
+        except Exception as exc:
+            self.status_label.text = f"Auto center failed: {exc}"
+            self.window.post_redraw()
+            return
+
+        self._sync_param_number("table_center_x")
+        self._sync_param_number("table_center_y")
+        self._refresh_scene(
+            reset_camera=False,
+            status=(
+                f"Auto center {result.frame_a}->{result.frame_b}: "
+                f"X={result.center_x:.3f}, Y={result.center_y:.3f}, "
+                f"score {result.score_before:.3f}->{result.score_after:.3f}"
+            ),
+        )
 
     def _material_for_points(self, point_size: float) -> rendering.MaterialRecord:
         material = rendering.MaterialRecord()
@@ -423,6 +622,51 @@ class DesktopCloudPoseTunerApp:
         material.shader = "defaultLitTransparency"
         material.base_color = [0.72, 0.72, 0.72, 0.35]
         return material
+
+    def _material_for_lines(self, color: list[float]) -> rendering.MaterialRecord:
+        material = rendering.MaterialRecord()
+        material.shader = "unlitLine"
+        material.base_color = color
+        return material
+
+    def _visible_table_center(self) -> np.ndarray:
+        center = self.state.params.table_center.astype(np.float64)
+        if self.state.params.invert_x:
+            center = center.copy()
+            center[0] *= -1.0
+        return center
+
+    def _build_crop_radius_guide(self) -> o3d.geometry.LineSet | None:
+        if not self.show_crop_radius_guide or not self.state.params.use_crop or self.state.params.crop_radius <= 0:
+            return None
+        center = self._visible_table_center()
+        radius = float(self.state.params.crop_radius)
+        segment_count = 128
+        angles = np.linspace(0.0, 2.0 * np.pi, segment_count, endpoint=False)
+        points = np.column_stack(
+            (
+                center[0] + radius * np.cos(angles),
+                center[1] + radius * np.sin(angles),
+                np.full(segment_count, center[2], dtype=np.float64),
+            )
+        )
+        lines = [[index, (index + 1) % segment_count] for index in range(segment_count)]
+        guide = o3d.geometry.LineSet(
+            points=o3d.utility.Vector3dVector(points),
+            lines=o3d.utility.Vector2iVector(lines),
+        )
+        guide.colors = o3d.utility.Vector3dVector(
+            np.tile(np.array([[1.0, 0.72, 0.1]], dtype=np.float64), (len(lines), 1))
+        )
+        return guide
+
+    def _build_table_center_marker(self) -> o3d.geometry.TriangleMesh:
+        marker = o3d.geometry.TriangleMesh.create_coordinate_frame(
+            size=max(float(self.state.params.crop_radius) * 0.08, 1.0),
+            origin=self._visible_table_center(),
+        )
+        marker.compute_vertex_normals()
+        return marker
 
     def _replace_geometry(self, name: str, geometry, material) -> None:
         scene = self.scene_widget.scene
@@ -509,6 +753,8 @@ class DesktopCloudPoseTunerApp:
         geometries = self.state.build_scene_geometries()
         self._replace_geometry("merged_cloud", geometries.merged_cloud, self._material_for_points(self.state.point_size))
         self._replace_geometry("reference_mesh", geometries.reference_mesh, self._material_for_reference())
+        self._replace_table_center_marker()
+        self._replace_geometry("crop_radius_guide", self._build_crop_radius_guide(), self._material_for_lines([1.0, 0.72, 0.1, 1.0]))
         self._apply_visibility()
 
         if reset_camera:

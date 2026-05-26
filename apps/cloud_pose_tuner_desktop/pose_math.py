@@ -193,6 +193,12 @@ def frame_angle_rad(frame_id: int, params: PoseParams) -> float:
     return float(start_rad + params.platform_rotation_sign * step_rad * frame_id + extra_rad * frame_id)
 
 
+def frame_turntable_delta_rad(frame_id: int, params: PoseParams) -> float:
+    step_rad = np.deg2rad(params.table_rotation_step)
+    extra_rad = np.deg2rad(params.extra_frame_rot_z_deg)
+    return float((params.platform_rotation_sign * step_rad + extra_rad) * frame_id)
+
+
 def build_camera_pose(angle_rad: float, params: PoseParams) -> CameraPose:
     camera_center = np.array(
         [

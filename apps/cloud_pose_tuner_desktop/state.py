@@ -10,7 +10,7 @@ import open3d as o3d
 from object_config import get_default_cad_path, get_pose_params_file, get_reconstruction_dir
 
 from .bundle_io import LoadedBundle, load_bundle
-from .filters import CloudRenderData, build_export_cloud, build_render_data
+from .filters import AutoCenterResult, CloudRenderData, auto_tune_turntable_center_xy, build_export_cloud, build_render_data
 from .pose_math import PoseParams
 
 
@@ -20,15 +20,47 @@ def _ensure_color_array(colors_rgb: np.ndarray | None, count: int, fallback: tup
     return np.clip(colors_rgb.astype(np.float64) / 255.0, 0.0, 1.0)
 
 
-def _frame_palette(frame_ids: np.ndarray) -> np.ndarray:
+def _frame_color_from_index(index: int) -> np.ndarray:
+    # A hand-picked high-contrast palette is easier to match by eye than evenly spaced HSV.
+    base_palette = np.asarray(
+        [
+            (230, 25, 75),    # red
+            (60, 180, 255),   # sky blue
+            (255, 225, 25),   # yellow
+            (170, 110, 255),  # purple
+            (60, 255, 100),   # green
+            (245, 130, 48),   # orange
+            (255, 80, 220),   # magenta
+            (70, 240, 240),   # cyan
+            (210, 245, 60),   # lime
+            (255, 180, 190),  # pink
+            (0, 130, 200),    # blue
+            (255, 215, 180),  # peach
+            (145, 30, 180),   # violet
+            (0, 200, 120),    # mint
+            (255, 250, 200),  # cream
+            (128, 128, 0),    # olive
+            (250, 190, 212),  # rose
+            (0, 128, 128),    # teal
+            (220, 190, 255),  # lavender
+            (170, 110, 40),   # brown
+        ],
+        dtype=np.float64,
+    ) / 255.0
+    color = base_palette[index % len(base_palette)].copy()
+    cycle = index // len(base_palette)
+    if cycle % 3 == 1:
+        color = np.clip(color * 0.72 + 0.18, 0.0, 1.0)
+    elif cycle % 3 == 2:
+        color = np.clip(color * 0.9, 0.0, 1.0)
+    return color
+
+
+def _frame_palette(frame_ids: np.ndarray, color_by_frame_id: dict[int, np.ndarray]) -> np.ndarray:
     if len(frame_ids) == 0:
         return np.empty((0, 3), dtype=np.float64)
-    unique_ids = np.unique(frame_ids)
-    palette = {}
-    for index, frame_id in enumerate(unique_ids):
-        hue = (index * 0.61803398875) % 1.0
-        palette[int(frame_id)] = np.asarray(_hsv_to_rgb(hue, 0.65, 1.0), dtype=np.float64)
-    return np.vstack([palette[int(frame_id)] for frame_id in frame_ids])
+    fallback = np.asarray((0.306, 0.631, 1.0), dtype=np.float64)
+    return np.vstack([color_by_frame_id.get(int(frame_id), fallback) for frame_id in frame_ids])
 
 
 def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[float, float, float]:
@@ -72,8 +104,13 @@ class DesktopTunerState:
         self.color_mode = "rgb"
         self.show_merged = True
         self.show_reference = True
+        self.show_axes = True
         self.white_background = False
         self.point_size = 2.0
+        self._frame_color_by_id = {
+            frame_id: _frame_color_from_index(index)
+            for index, frame_id in enumerate(self.frame_ids())
+        }
         self.reference_path = Path(reference_path) if reference_path is not None else get_default_cad_path()
         self.reference_mesh = self._load_reference_mesh(self.reference_path)
         self.last_preview = build_render_data(self.bundle, self.params, self.preview_max_points)
@@ -117,6 +154,25 @@ class DesktopTunerState:
         np.savez_compressed(str(export_path), **payload)
         return export_path
 
+    def auto_tune_center_xy(
+        self,
+        search_radius: float,
+        max_points_per_frame: int,
+        pair_start_index: int,
+        pair_gap: int,
+    ) -> AutoCenterResult:
+        result = auto_tune_turntable_center_xy(
+            self.bundle,
+            self.params,
+            search_radius=search_radius,
+            max_points_per_frame=max_points_per_frame,
+            pair_start_index=pair_start_index,
+            pair_gap=pair_gap,
+        )
+        self.params.table_center_x = result.center_x
+        self.params.table_center_y = result.center_y
+        return result
+
     def save_pose_json(self, path: Path | None = None) -> Path:
         path = Path(path) if path is not None else self.pose_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +181,10 @@ class DesktopTunerState:
 
     def frame_ids(self) -> list[int]:
         return [frame.frame_id for frame in self.bundle.frames]
+
+    def frame_color(self, frame_id: int) -> np.ndarray:
+        fallback = np.asarray((0.306, 0.631, 1.0), dtype=np.float64)
+        return self._frame_color_by_id.get(int(frame_id), fallback)
 
     def current_stats_text(self) -> str:
         preview = self.last_preview
@@ -143,6 +203,6 @@ class DesktopTunerState:
 
     def _build_merged_colors(self, preview: CloudRenderData) -> np.ndarray:
         if self.color_mode == "frame":
-            return _frame_palette(preview.merged_frame_ids)
+            return _frame_palette(preview.merged_frame_ids, self._frame_color_by_id)
         return _ensure_color_array(preview.merged_colors_rgb, len(preview.merged_points), fallback=(0.306, 0.631, 1.0))
 

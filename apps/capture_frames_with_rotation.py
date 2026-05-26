@@ -21,43 +21,61 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT_DIR / "outputs" / "recorded" / "frames"
 CAPTURE_METADATA_FILE = "capture_metadata.json"
 
-CAM_LEFT_INDEX = 0
-CAM_RIGHT_INDEX = 1
+CAM_LEFT_INDEX = 1
+CAM_RIGHT_INDEX = 0
 CAPTURE_WIDTH = 2560
 CAPTURE_HEIGHT = 1440
 DELAY_AFTER_ROTATION = 0.5
 DELAY_BETWEEN_SHOTS = 0.15
+LASER_SETTLE_DELAY = 0.25
+LASER_FLUSH_FRAMES = 4
 SERIAL_BAUD = 115200
 SERIAL_TIMEOUT_READ = 120.0
 
 # Параметры камер (как в tune_camera_exposure, слайдеры)
-CAM_EXPOSURE = -4.5
-CAM_GAIN = 32
-CAM_BRIGHTNESS = 0
-CAM_CONTRAST = 60
-CAM_SATURATION = 60
-CAM_GAMMA = 100
+CAM_EXPOSURE = -5.60
+CAM_GAIN = 36
+CAM_BRIGHTNESS_LEFT = 0
+CAM_BRIGHTNESS_RIGHT = 0
+CAM_CONTRAST_LEFT = 43
+CAM_CONTRAST_RIGHT = 40
+CAM_SATURATION_LEFT = 35
+CAM_SATURATION_RIGHT = 31
+CAM_GAMMA_LEFT = 88
+CAM_GAMMA_RIGHT = 100
+CAM_TEMPERATURE = 2000
+CAM_HUE = 0
 STARTUP_WARMUP_FRAMES = 12
 
 
 def open_camera(index: int) -> cv2.VideoCapture:
-    """Открыть камеру через DirectShow, где на Windows стабильнее работают ручные параметры."""
-    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    """Открыть камеру через Media Foundation, как в tune_camera_exposure."""
+    cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
     if not cap.isOpened():
         cap.release()
         cap = cv2.VideoCapture(index)
     return cap
 
 
-def apply_camera_params(cap: cv2.VideoCapture, exposure: float | None) -> None:
+def apply_camera_params(
+    cap: cv2.VideoCapture,
+    exposure: float | None,
+    brightness: int,
+    contrast: int,
+    saturation: int,
+    gamma: int,
+) -> None:
     if exposure is not None:
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
     cap.set(cv2.CAP_PROP_GAIN, CAM_GAIN)
-    cap.set(cv2.CAP_PROP_BRIGHTNESS, CAM_BRIGHTNESS)
-    cap.set(cv2.CAP_PROP_CONTRAST, CAM_CONTRAST)
-    cap.set(cv2.CAP_PROP_SATURATION, CAM_SATURATION)
-    cap.set(cv2.CAP_PROP_GAMMA, CAM_GAMMA)
+    cap.set(cv2.CAP_PROP_BRIGHTNESS, brightness)
+    cap.set(cv2.CAP_PROP_CONTRAST, contrast)
+    cap.set(cv2.CAP_PROP_SATURATION, saturation)
+    cap.set(cv2.CAP_PROP_GAMMA, gamma)
+    cap.set(cv2.CAP_PROP_HUE, CAM_HUE)
+    cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+    cap.set(cv2.CAP_PROP_TEMPERATURE, CAM_TEMPERATURE)
 
 
 def warmup_cameras(
@@ -65,6 +83,17 @@ def warmup_cameras(
     cap_right: cv2.VideoCapture,
     frames_count: int,
 ) -> None:
+    for _ in range(max(0, frames_count)):
+        cap_left.read()
+        cap_right.read()
+
+
+def flush_cameras(
+    cap_left: cv2.VideoCapture,
+    cap_right: cv2.VideoCapture,
+    frames_count: int,
+) -> None:
+    """Выбросить кадры, которые могли накопиться в буфере до смены состояния лазера."""
     for _ in range(max(0, frames_count)):
         cap_left.read()
         cap_right.read()
@@ -138,7 +167,11 @@ def main():
                         help="Задержка после OK перед снимком, сек")
     parser.add_argument("--shot-delay", type=float, default=DELAY_BETWEEN_SHOTS,
                         help="Задержка между снимками в одной позиции, сек")
-    parser.add_argument("--laser-pwm", type=int, default=440,
+    parser.add_argument("--laser-settle-delay", type=float, default=LASER_SETTLE_DELAY,
+                        help="Задержка после переключения лазера перед сбросом буфера камеры, сек")
+    parser.add_argument("--laser-flush-frames", type=int, default=LASER_FLUSH_FRAMES,
+                        help="Сколько пар кадров выбросить после переключения лазера")
+    parser.add_argument("--laser-pwm", type=int, default=629,
                         help="Мощность лазера 0..1023. Если задано, перед съемкой отправляется LASER_PWM, а в конце лазер выключается.")
     parser.add_argument("--output", type=str, default=None,
                         help=f"Папка для кадров (по умолчанию {OUTPUT_DIR})")
@@ -187,24 +220,26 @@ def main():
 
     cap_left.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap_left.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    cap_left.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     cap_right.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap_right.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    cap_right.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     exp_left = args.left_exposure if args.left_exposure is not None else (None if args.no_camera_params else CAM_EXPOSURE)
     exp_right = args.right_exposure if args.right_exposure is not None else (None if args.no_camera_params else CAM_EXPOSURE)
 
     if not args.no_camera_params:
-        apply_camera_params(cap_left, exp_left)
-        apply_camera_params(cap_right, exp_right)
+        apply_camera_params(cap_left, exp_left, CAM_BRIGHTNESS_LEFT, CAM_CONTRAST_LEFT, CAM_SATURATION_LEFT, CAM_GAMMA_LEFT)
+        apply_camera_params(cap_right, exp_right, CAM_BRIGHTNESS_RIGHT, CAM_CONTRAST_RIGHT, CAM_SATURATION_RIGHT, CAM_GAMMA_RIGHT)
         warmup_cameras(cap_left, cap_right, args.warmup_frames)
-        apply_camera_params(cap_left, exp_left)
-        apply_camera_params(cap_right, exp_right)
+        apply_camera_params(cap_left, exp_left, CAM_BRIGHTNESS_LEFT, CAM_CONTRAST_LEFT, CAM_SATURATION_LEFT, CAM_GAMMA_LEFT)
+        apply_camera_params(cap_right, exp_right, CAM_BRIGHTNESS_RIGHT, CAM_CONTRAST_RIGHT, CAM_SATURATION_RIGHT, CAM_GAMMA_RIGHT)
     elif exp_left is not None or exp_right is not None:
-        apply_camera_params(cap_left, exp_left)
-        apply_camera_params(cap_right, exp_right)
+        apply_camera_params(cap_left, exp_left, CAM_BRIGHTNESS_LEFT, CAM_CONTRAST_LEFT, CAM_SATURATION_LEFT, CAM_GAMMA_LEFT)
+        apply_camera_params(cap_right, exp_right, CAM_BRIGHTNESS_RIGHT, CAM_CONTRAST_RIGHT, CAM_SATURATION_RIGHT, CAM_GAMMA_RIGHT)
         warmup_cameras(cap_left, cap_right, args.warmup_frames)
-        apply_camera_params(cap_left, exp_left)
-        apply_camera_params(cap_right, exp_right)
+        apply_camera_params(cap_left, exp_left, CAM_BRIGHTNESS_LEFT, CAM_CONTRAST_LEFT, CAM_SATURATION_LEFT, CAM_GAMMA_LEFT)
+        apply_camera_params(cap_right, exp_right, CAM_BRIGHTNESS_RIGHT, CAM_CONTRAST_RIGHT, CAM_SATURATION_RIGHT, CAM_GAMMA_RIGHT)
 
     w_left = int(cap_left.get(cv2.CAP_PROP_FRAME_WIDTH))
     h_left = int(cap_left.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -214,7 +249,11 @@ def main():
     if not args.no_camera_params:
         print(
             f"Камеры: exp={exp_left}/{exp_right} gain={CAM_GAIN} "
-            f"bri={CAM_BRIGHTNESS} con={CAM_CONTRAST} sat={CAM_SATURATION} gam={CAM_GAMMA}"
+            f"bri={CAM_BRIGHTNESS_LEFT}/{CAM_BRIGHTNESS_RIGHT} "
+            f"con={CAM_CONTRAST_LEFT}/{CAM_CONTRAST_RIGHT} "
+            f"sat={CAM_SATURATION_LEFT}/{CAM_SATURATION_RIGHT} "
+            f"gam={CAM_GAMMA_LEFT}/{CAM_GAMMA_RIGHT} "
+            f"temp={CAM_TEMPERATURE} hue={CAM_HUE} backend=MSMF"
         )
     elif exp_left is not None or exp_right is not None:
         print(f"Экспозиция: левая {exp_left}, правая {exp_right}")
@@ -237,6 +276,10 @@ def main():
         print(f"  Лазер PWM: {args.laser_pwm}/1023")
         print(
             f"  Режим лазера: 1-й снимок без лазера + {base_shots_per_position} снимков с лазером на позицию"
+        )
+        print(
+            f"  После переключения лазера: задержка {args.laser_settle_delay} сек, "
+            f"сброс {args.laser_flush_frames} пар кадров"
         )
     print(f"  Сохранение: {out_dir}")
     print()
@@ -266,6 +309,10 @@ def main():
             time.sleep(args.delay)
             position_saved = 0
             if has_texture_shot_without_laser:
+                if not send_serial_ok(ser, "LASER_PWM 0"):
+                    print("LASER_PWM 0 не подтвержден (нет OK), продолжаем.", end=" ", flush=True)
+                time.sleep(max(0.0, args.laser_settle_delay))
+                flush_cameras(cap_left, cap_right, args.laser_flush_frames)
                 print("texture(no laser)...", end=" ", flush=True)
             for shot in range(total_shots_per_position):
                 shot_laser_enabled = (not has_texture_shot_without_laser) or (shot > 0)
@@ -296,13 +343,17 @@ def main():
                 if shot == 0 and has_texture_shot_without_laser:
                     if not send_serial_ok(ser, f"LASER_PWM {args.laser_pwm}"):
                         print("LASER_PWM не подтвержден (нет OK), продолжаем.", end=" ", flush=True)
-                    # Даём лазеру стабилизироваться до первого depth-кадра.
+                    # Даём лазеру стабилизироваться и убираем кадры со старым состоянием лазера.
+                    time.sleep(max(0.0, args.laser_settle_delay))
+                    flush_cameras(cap_left, cap_right, args.laser_flush_frames)
                     time.sleep(args.shot_delay)
                     continue
                 if shot + 1 < total_shots_per_position:
                     time.sleep(args.shot_delay)
             if has_texture_shot_without_laser:
-                send_serial_ok(ser, "LASER_PWM 0")
+                if send_serial_ok(ser, "LASER_PWM 0"):
+                    time.sleep(max(0.0, args.laser_settle_delay))
+                    flush_cameras(cap_left, cap_right, args.laser_flush_frames)
             print(f"снимков сохранено: {position_saved}/{total_shots_per_position}")
     finally:
         if args.laser_pwm is not None:
@@ -338,6 +389,8 @@ def main():
         "rotation_dir": int(args.dir),
         "platform_rotation_sign": int(-1 if int(args.dir) == 1 else 1),
         "laser_pwm": None if args.laser_pwm is None else int(args.laser_pwm),
+        "laser_settle_delay": float(args.laser_settle_delay),
+        "laser_flush_frames": int(args.laser_flush_frames),
         "degrees_per_position": float(step_deg),
         "frame_width": int(args.width),
         "frame_height": int(args.height),

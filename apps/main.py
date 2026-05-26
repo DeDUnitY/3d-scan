@@ -45,15 +45,18 @@ class Config:
     PRE_FILTER_CAP = 63
     DISPARITY_MEDIAN_SIZE = 5
     DISPARITY_SCALE = 1
+    # Режим сравнения стереопары для disparity:
+    # "gray" - старый черно-белый режим, "color" - сравнение по BGR-каналам.
+    DISPARITY_COMPARE_MODE = "gray"
 
-    ROI_MARGIN = 700
-    ROI_MARGIN_TOP = 400
-    ROI_MARGIN_BOTTOM = 200
+    ROI_MARGIN = 70
+    ROI_MARGIN_TOP = 40
+    ROI_MARGIN_BOTTOM = 20
 
     CAMERA_MIN_DISTANCE = 0.0
     CAMERA_MAX_DISTANCE = 400.0
 
-    CROP_RADIUS = 50.0
+    CROP_RADIUS = 500.0
     Z_MIN = -200.0
     Z_MAX = 150.0
 
@@ -277,17 +280,31 @@ def build_rectify_maps(calib):
     return (map1x, map1y), (map2x, map2y)
 
 
+def prepare_disparity_images(img_l, img_r, size, maps):
+    mode = str(Config.DISPARITY_COMPARE_MODE).lower()
+    if mode not in ("gray", "color"):
+        raise ValueError('DISPARITY_COMPARE_MODE must be "gray" or "color".')
+
+    if mode == "color":
+        left = cv2.cvtColor(img_l, cv2.COLOR_GRAY2BGR) if img_l.ndim == 2 else img_l
+        right = cv2.cvtColor(img_r, cv2.COLOR_GRAY2BGR) if img_r.ndim == 2 else img_r
+    else:
+        left = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY) if img_l.ndim == 3 else img_l
+        right = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY) if img_r.ndim == 3 else img_r
+
+    if left.shape[:2][::-1] != size:
+        left = cv2.resize(left, size)
+    if right.shape[:2][::-1] != size:
+        right = cv2.resize(right, size)
+
+    rl = cv2.remap(left, maps[0][0], maps[0][1], cv2.INTER_LINEAR)
+    rr = cv2.remap(right, maps[1][0], maps[1][1], cv2.INTER_LINEAR)
+    return rl, rr
+
+
 def compute_points_3d(img_l, img_r, calib, maps):
     size = calib["image_size"]
-    # Подготовка градаций серого для disparity
-    gl = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY) if img_l.ndim == 3 else img_l
-    gr = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY) if img_r.ndim == 3 else img_r
-    if gl.shape[:2][::-1] != size:
-        gl = cv2.resize(gl, size)
-    if gr.shape[:2][::-1] != size:
-        gr = cv2.resize(gr, size)
-    rl = cv2.remap(gl, maps[0][0], maps[0][1], cv2.INTER_LINEAR)
-    rr = cv2.remap(gr, maps[1][0], maps[1][1], cv2.INTER_LINEAR)
+    rl, rr = prepare_disparity_images(img_l, img_r, size, maps)
 
     # Ректифицированное цветное изображение для сохранения цветов в облаке
     if img_l.shape[:2][::-1] != size:
@@ -526,6 +543,7 @@ def main():
             print(f"  P2 = {Config.P2} (recalculated)")
     else:
         print(f"Using default SGBM parameters (tuned params not found at {SGBM_PARAMS_FILE})")
+    print(f"Disparity compare mode: {Config.DISPARITY_COMPARE_MODE}")
 
     apply_capture_metadata_to_config(Config.INPUT_DIR)
     apply_object_mask_metadata_to_config(Config.INPUT_DIR)

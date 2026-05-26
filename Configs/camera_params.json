@@ -1,23 +1,29 @@
 {
   "camera": {
-    "exposure": -5.1000000000000005,
-    "gain": 32,
+    "exposure": -5.6000000000000005,
+    "gain": 36,
     "brightness": 0,
-    "contrast": 60,
-    "gamma": 100
+    "contrast": 43,
+    "saturation": 35,
+    "gamma": 88,
+    "temperature": 2000
   },
   "left": {
-    "exposure": -5.1000000000000005,
-    "gain": 32,
+    "exposure": -5.6000000000000005,
+    "gain": 36,
     "brightness": 0,
-    "contrast": 60,
-    "gamma": 100
+    "contrast": 43,
+    "saturation": 35,
+    "gamma": 88,
+    "temperature": 2000
   },
   "right": {
-    "exposure": -5.1000000000000005,
-    "gain": 32,
+    "exposure": -5.6000000000000005,
+    "gain": 36,
     "brightness": 0,
-    "contrast": 60,
-    "gamma": 100
+    "contrast": 40,
+    "saturation": 31,
+    "gamma": 100,
+    "temperature": 2000
   }
 }
